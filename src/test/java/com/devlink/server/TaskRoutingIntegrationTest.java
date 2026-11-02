@@ -104,6 +104,30 @@ class TaskRoutingIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void readyOnlyAndStaleOnlineReceiversCannotCreateAnyTask() throws Exception {
+        String key = UUID.randomUUID().toString();
+        var request = new CreateTaskRequest(key, receiver.getId(), "Offline preflight");
+        try (var client = HttpClient.newHttpClient();
+                var broker = connect(client, "receiver-token", receiver.getId())) {
+            assertOfflineCreationRejected(request);
+            assertThat(broker.listener.messages.poll(200, TimeUnit.MILLISECONDS)).isNull();
+        }
+        Agent stale = agents.findById(receiver.getId()).orElseThrow();
+        stale.markOnline(LocalDateTime.now());
+        agents.saveAndFlush(stale);
+        assertOfflineCreationRejected(request);
+    }
+
+    private void assertOfflineCreationRejected(CreateTaskRequest request) {
+        long eventsBefore = taskEvents.count();
+        assertThatThrownBy(() -> creation.create(teamId, requester.getId(), request))
+                .isInstanceOfSatisfying(com.devlink.server.common.BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(com.devlink.server.common.ErrorCode.RECEIVER_OFFLINE));
+        assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(teamId)).isEmpty();
+        assertThat(taskEvents.count()).isEqualTo(eventsBefore);
+    }
+
+    @Test
     void onlyDesignatedReceiverGetsTaskAndSocketWriteDoesNotRecordDelivery() throws Exception {
         try (var client = HttpClient.newHttpClient();
                 var requesterBroker = connect(client, "requester-token", requester.getId());

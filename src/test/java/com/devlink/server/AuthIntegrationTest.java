@@ -38,6 +38,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @TestPropertySource(properties = "devlink.cors.allowed-origins=https://devlinkfrontend.vercel.app,https://devlink.ai.kr")
 class AuthIntegrationTest extends AbstractIntegrationTest {
+    private final java.util.List<OnlineTestBroker> onlineBrokers = new java.util.ArrayList<>();
+    @org.junit.jupiter.api.AfterEach
+    void closeOnlineBrokers() { onlineBrokers.forEach(OnlineTestBroker::close); }
+    private void online(long id, String token) throws Exception {
+        onlineBrokers.add(OnlineTestBroker.connect(port, token, id, agents));
+    }
     private static final String PASSWORD = "ValidPassword123!";
 
     @LocalServerPort private int port;
@@ -215,6 +221,9 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
             var issued = browser.post("/api/v1/agents/" + requester.getId() + "/token", null, browser.csrf());
             assertSuccess(issued, 201);
             String token = issued.body().path("data").path("token").asText();
+            var receiverToken = browser.post("/api/v1/agents/" + receiver.getId() + "/token", null, browser.csrf());
+            assertSuccess(receiverToken, 201);
+            online(receiver.getId(), receiverToken.body().path("data").path("token").asText());
             assertSuccess(browser.post("/api/v1/auth/logout", null, browser.csrf()), 200);
 
             var response = browser.postWithAgentToken("/api/v1/tasks/" + team.getId(), Map.of(
@@ -248,6 +257,9 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
             String token = issued.body().path("data").path("token").asText();
             String requestKey = UUID.randomUUID().toString();
             String path = "/api/v1/tasks/" + team.getId();
+            var receiverToken = owner.post("/api/v1/agents/" + receiver.getId() + "/token", null, owner.csrf());
+            assertSuccess(receiverToken, 201);
+            online(receiver.getId(), receiverToken.body().path("data").path("token").asText());
             Map<String, Object> body = Map.of("requestKey", requestKey,
                     "receiverAgentId", receiver.getId(),
                     "prompt", "Verify permission before existing task controller");

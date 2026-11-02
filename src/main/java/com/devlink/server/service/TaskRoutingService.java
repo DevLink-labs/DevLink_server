@@ -46,6 +46,32 @@ public class TaskRoutingService {
         this.acknowledgements = acknowledgements;
     }
 
+    /** 신규 작업 저장 전의 짧은 연결 검사. 소켓 전송과 ACK 등록은 커밋 이후에만 한다. */
+    public void requireReceiverAvailable(Agent receiver) {
+        if (receiver.getStatus() != AgentStatus.ONLINE) {
+            throw new BusinessException(ErrorCode.RECEIVER_OFFLINE);
+        }
+        String agentId = receiver.getId().toString();
+        try {
+            WebSocketSession session = connections.findByAgentId(agentId)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.RECEIVER_OFFLINE));
+            boolean available = connections.executeIfCurrent(agentId, session, () -> {
+                if (!matchesReceiver(session, receiver)) {
+                    throw new BusinessException(ErrorCode.ACCESS_DENIED);
+                }
+                return true;
+            });
+            if (!available) {
+                throw new BusinessException(ErrorCode.RECEIVER_OFFLINE);
+            }
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw new BusinessException(ErrorCode.DELIVERY_SERVICE_UNAVAILABLE);
+        }
+        // 검사 후 단절될 수 있으므로 기존 커밋 후 전달 결과와 PENDING 보존 정책도 유지한다.
+    }
+
     // 저장 트랜잭션 안에서 직접 호출하면 거부
     @Transactional(propagation = Propagation.NEVER)
     public TaskRoutingResult sendTask(long taskId) {

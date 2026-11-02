@@ -228,6 +228,70 @@ class TaskRoutingServiceTest {
         verify(current, never()).sendMessage(any());
     }
 
+    @Test
+    void preflightChecksCurrentIdentityWithoutSendingOrRegisteringAck() throws Exception {
+        WebSocketSession session = registerSession();
+        routing.requireReceiverAvailable(receiver);
+        verify(session, never()).sendMessage(any());
+        verifyNoInteractions(presence, ackEvents);
+        verify(tasks, never()).save(any());
+    }
+
+    @Test
+    void preflightRejectsOfflineEvenWithOpenConnection() {
+        registerSession();
+        receiver.markOffline();
+        assertPreflightError(routing, ErrorCode.RECEIVER_OFFLINE);
+    }
+
+    @Test
+    void preflightRejectsStaleOnlineWithoutConnection() {
+        assertPreflightError(routing, ErrorCode.RECEIVER_OFFLINE);
+    }
+
+    @Test
+    void preflightRejectsClosedConnection() {
+        WebSocketSession session = registerSession();
+        when(session.isOpen()).thenReturn(false);
+        assertPreflightError(routing, ErrorCode.RECEIVER_OFFLINE);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"99,21,31", "2,99,31", "2,21,99"})
+    void preflightRejectsWrongAgentOwnerOrTeam(long agentId, long ownerId, long teamId) {
+        WebSocketSession session = registerSession();
+        when(session.getPrincipal()).thenReturn(UsernamePasswordAuthenticationToken.authenticated(
+                new AgentPrincipal(agentId, ownerId, teamId), null, List.of()));
+        assertPreflightError(routing, ErrorCode.ACCESS_DENIED);
+    }
+
+    @Test
+    void preflightRejectsConnectionReplacedDuringLookup() {
+        WebSocketSession session = session("previous");
+        ConnectionRegistry registry = mock(ConnectionRegistry.class);
+        when(registry.findByAgentId("2")).thenReturn(Optional.of(session));
+        when(registry.executeIfCurrent(org.mockito.ArgumentMatchers.eq("2"),
+                org.mockito.ArgumentMatchers.eq(session), any())).thenReturn(false);
+        var service = new TaskRoutingService(tasks, agents, registry, sender, presence, acknowledgements);
+        assertPreflightError(service, ErrorCode.RECEIVER_OFFLINE);
+    }
+
+    @Test
+    void preflightMapsRegistryFailureToServiceUnavailable() {
+        ConnectionRegistry registry = mock(ConnectionRegistry.class);
+        when(registry.findByAgentId("2")).thenThrow(new IllegalStateException("internal secret"));
+        var service = new TaskRoutingService(tasks, agents, registry, sender, presence, acknowledgements);
+        assertPreflightError(service, ErrorCode.DELIVERY_SERVICE_UNAVAILABLE);
+    }
+
+    private void assertPreflightError(TaskRoutingService service, ErrorCode error) {
+        assertThatThrownBy(() -> service.requireReceiverAvailable(receiver))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getErrorCode()).isEqualTo(error));
+        assertThat(task.getStatus()).isEqualTo(TaskStatus.PENDING);
+        verifyNoInteractions(presence, ackEvents);
+    }
+
     private WebSocketSession registerSession() {
         WebSocketSession session = session("connection-2");
         connections.register("2", session);

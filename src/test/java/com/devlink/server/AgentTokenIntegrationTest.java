@@ -35,6 +35,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 class AgentTokenIntegrationTest extends AbstractIntegrationTest {
+    private final java.util.List<OnlineTestBroker> onlineBrokers = new java.util.ArrayList<>();
+    @org.junit.jupiter.api.AfterEach
+    void closeOnlineBrokers() { onlineBrokers.forEach(OnlineTestBroker::close); }
+    private void online(long id, String token) throws Exception {
+        onlineBrokers.add(OnlineTestBroker.connect(port, token, id, agents));
+    }
     @LocalServerPort private int port;
     @Autowired private ObjectMapper json;
     @Autowired private AgentRepository agents;
@@ -64,6 +70,7 @@ class AgentTokenIntegrationTest extends AbstractIntegrationTest {
             long secondAgentId = second.createAgent(teamId);
             String firstToken = first.issueToken(firstAgentId);
             String secondToken = second.issueToken(secondAgentId);
+            online(secondAgentId, secondToken);
             var listing = machine("GET", "/api/v1/agents/teams/" + teamId, null, firstToken);
             assertSuccess(listing, 200);
             assertThat(listing.body().path("data").findValuesAsText("agentId"))
@@ -113,6 +120,26 @@ class AgentTokenIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void offlineReceiverReturns409WithoutSavingTaskOrCreatedEvent() throws Exception {
+        try (var owner = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            long requesterId = owner.createAgent(teamId);
+            long receiverId = owner.createAgent(teamId);
+            String token = owner.issueToken(requesterId);
+            String key = UUID.randomUUID().toString();
+            long tasksBefore = tasks.count();
+            long eventsBefore = taskEvents.count();
+            assertError(machine("POST", "/api/v1/tasks/" + teamId, Map.of(
+                    "requestKey", key, "receiverAgentId", receiverId, "prompt", "Offline must not be stored"), token),
+                    409, "RECEIVER_OFFLINE");
+            assertThat(tasks.findByRequesterAgentIdAndRequestKey(requesterId, key)).isEmpty();
+            assertThat(tasks.count()).isEqualTo(tasksBefore);
+            assertThat(taskEvents.count()).isEqualTo(eventsBefore);
+        }
+    }
+
+    @Test
     void taskCreationRejectsAnotherTeamPathAndAnotherTeamsReceiver() throws Exception {
         try (var owner = new Browser()) {
             long userId = owner.signupAndLogin();
@@ -147,6 +174,7 @@ class AgentTokenIntegrationTest extends AbstractIntegrationTest {
             long receiverId = owner.createAgent(teamId);
             String requesterToken = owner.issueToken(requesterId);
             String receiverToken = owner.issueToken(receiverId);
+            online(receiverId, receiverToken);
             String requestKey = UUID.randomUUID().toString();
 
             var created = machine("POST", "/api/v1/tasks/" + teamId + "?agentId=" + receiverId, Map.of(

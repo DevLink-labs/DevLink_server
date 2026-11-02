@@ -210,6 +210,8 @@ public class TaskCreationService {
         if (!agent.getTeamId().equals(teamId)) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
         }
+        // 재접수는 위에서 기존 작업을 반환한다. 새 작업에 대해서만 저장 전에 검사한다.
+        taskRoutingService.requireReceiverAvailable(agent);
     }
 
     private record Creation(Task task, boolean replayed) { }

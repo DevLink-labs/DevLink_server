@@ -95,6 +95,37 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
     }
 
     @ParameterizedTest
+    @EnumSource(value = ErrorCode.class, names = {"RECEIVER_OFFLINE", "DELIVERY_SERVICE_UNAVAILABLE", "ACCESS_DENIED"})
+    void unavailableReceiverIsRejectedBeforeSavingTaskOrEvent(ErrorCode error) {
+        long eventsBefore = events.count();
+        doThrow(new BusinessException(error)).when(routing).requireReceiverAvailable(any());
+
+        assertThatThrownBy(() -> service.create(teamId, agentId, request))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        exception -> assertThat(exception.getErrorCode()).isEqualTo(error));
+
+        assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(teamId)).isEmpty();
+        assertThat(events.count()).isEqualTo(eventsBefore);
+        verify(routing, never()).sendTask(anyLong());
+    }
+
+    @Test
+    void replayAfterDisconnectReturnsSavedTaskWithoutCheckingOrSendingAgain() {
+        var created = service.create(teamId, agentId, request);
+        clearInvocations(routing);
+        doThrow(new BusinessException(ErrorCode.RECEIVER_OFFLINE)).when(routing).requireReceiverAvailable(any());
+
+        var replay = service.create(teamId, agentId, request);
+
+        assertThat(replay.replayed()).isTrue();
+        assertThat(replay.taskId()).isEqualTo(created.taskId());
+        assertThat(replay.delivery()).isEqualTo(created.delivery());
+        assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(teamId)).hasSize(1);
+        verify(routing, never()).requireReceiverAvailable(any());
+        verify(routing, never()).sendTask(anyLong());
+    }
+
+    @ParameterizedTest
     @EnumSource(value = TaskRoutingResult.Status.class, names = {
             "RECEIVER_OFFLINE", "CONNECTION_UNAVAILABLE", "CONNECTION_REPLACED"})
     void routingFailureIsRecordedAndReturned(TaskRoutingResult.Status status) {
@@ -216,7 +247,8 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
         assertThatThrownBy(() -> service.create(teamId, agentId, request))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(tasks.findByRequesterAgentIdAndRequestKey(agentId, request.requestKey())).isEmpty();
-        verifyNoInteractions(routing);
+        verify(routing).requireReceiverAvailable(any());
+        verify(routing, never()).sendTask(anyLong());
     }
 
     @Test

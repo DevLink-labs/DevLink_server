@@ -1,10 +1,13 @@
 # 운영(EC2) 전용 compose. CI/CD가 /opt/devlink/docker-compose.prod.yml 로 복사하고 같은 폴더의 .env 를 읽는다.
 # 앱 이미지는 GHCR에서 받으며 EC2에서는 빌드하지 않는다. DB 포트는 외부에 노출하지 않는다.
 # 외부 노출은 caddy(80, 443)만 한다. app 의 8080 은 compose 네트워크 안에서만 접근한다.
+# postgres 는 EC2 루프백(127.0.0.1)에만 바인딩해 SSH 터널로만 DB 클라이언트가 접속한다.
 services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: devlink
       POSTGRES_USER: ${DB_USERNAME}
