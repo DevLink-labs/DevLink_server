@@ -1,5 +1,6 @@
 # 운영(EC2) 전용 compose. CI/CD가 /opt/devlink/docker-compose.prod.yml 로 복사하고 같은 폴더의 .env 를 읽는다.
 # 앱 이미지는 GHCR에서 받으며 EC2에서는 빌드하지 않는다. DB 포트는 외부에 노출하지 않는다.
+# 외부 노출은 caddy(80, 443)만 한다. app 의 8080 은 compose 네트워크 안에서만 접근한다.
 services:
   postgres:
     image: postgres:16
@@ -19,8 +20,6 @@ services:
   app:
     image: ghcr.io/ssafy-urayaha/devlink-server:latest
     restart: unless-stopped
-    ports:
-      - "8080:8080"
     environment:
       SPRING_PROFILES_ACTIVE: prod
       DB_URL: jdbc:postgresql://postgres:5432/devlink
@@ -32,5 +31,20 @@ services:
       postgres:
         condition: service_healthy
 
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:

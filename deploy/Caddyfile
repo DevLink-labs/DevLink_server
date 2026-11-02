@@ -1,0 +1,6 @@
+# 운영(EC2) HTTPS 종단. CI/CD가 /opt/devlink/Caddyfile 로 복사한다.
+# Let's Encrypt 인증서 발급·갱신, 80→443 리다이렉트, X-Forwarded-* 헤더 전달, WebSocket 업그레이드를 Caddy가 처리한다.
+# 인증서는 caddy_data 볼륨에 저장되므로 재배포해도 재발급하지 않는다. 볼륨을 지우면 발급 횟수 제한에 걸릴 수 있다.
+api.devlink.ai.kr {
+    reverse_proxy app:8080
+}

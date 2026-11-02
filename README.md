@@ -142,7 +142,9 @@ domain/
 | develop·master 푸시, PR | `./gradlew build` (통합 테스트 포함) |
 | master 푸시 | 위 통과 후 Docker 이미지를 `ghcr.io/ssafy-urayaha/devlink-server`에 push → SSH로 EC2 접속 → `docker compose pull && up -d` |
 
-EC2에는 Docker만 있으면 됩니다. compose 파일([deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml))과 `.env`는 배포 때마다 워크플로우가 `/opt/devlink`에 써 넣습니다.
+EC2에는 Docker만 있으면 됩니다. compose 파일([deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml)), Caddy 설정([deploy/Caddyfile](deploy/Caddyfile)), `.env`는 배포 때마다 워크플로우가 `/opt/devlink`에 써 넣습니다.
+
+**HTTPS**: `api.devlink.ai.kr`(A 레코드 → EC2 퍼블릭 IP)로 들어온 요청을 Caddy 컨테이너가 80·443에서 받아 Let's Encrypt 인증서를 자동 발급·갱신하고 `app:8080`으로 프록시합니다. 앱 컨테이너의 8080은 compose 네트워크 안에서만 접근하며 외부에 노출하지 않습니다. 인증서는 `caddy_data` 볼륨에 저장되므로 재배포해도 재발급하지 않습니다. 이 볼륨을 지우면 Let's Encrypt 발급 횟수 제한에 걸릴 수 있으니 주의합니다. 앱은 prod 프로필에서 `server.forward-headers-strategy=framework`로 프록시가 전달한 `X-Forwarded-*` 헤더를 신뢰합니다.
 
 **GitHub Secrets** (Settings → Secrets and variables → Actions)
 
@@ -162,13 +164,15 @@ sudo usermod -aG docker ubuntu
 sudo mkdir -p /opt/devlink && sudo chown ubuntu:ubuntu /opt/devlink
 ```
 
-재접속 후 `docker ps`가 sudo 없이 되면 준비 완료입니다. 보안 그룹은 22, 8080 인바운드가 필요합니다.
+재접속 후 `docker ps`가 sudo 없이 되면 준비 완료입니다. 보안 그룹은 22, 80, 443 인바운드가 필요합니다. 서버에 ufw가 켜져 있으면 `sudo ufw allow 80/tcp && sudo ufw allow 443/tcp`로 같은 포트를 엽니다. 80은 인증서 발급(ACME HTTP 챌린지)과 HTTPS 리다이렉트에 사용합니다.
 
 **배포 확인**
 
 ```sh
-curl -i http://<EC2_HOST>:8080/api/v1/health
+curl -i https://api.devlink.ai.kr/api/v1/health   # 200, Caddy 경유
 ```
+
+인증서가 발급되지 않으면 EC2에서 `docker compose -f /opt/devlink/docker-compose.prod.yml logs caddy`로 원인을 확인합니다. 대부분 DNS 미전파이거나 80 포트가 닫힌 경우입니다.
 
 **운영 변수 추가 순서**: `deploy/.prod.env.example`에 키 추가 → Secret `PROD_ENV`에 값 추가 → `docker-compose.prod.yml`의 `app.environment`에 전달 추가 → master 푸시. 키가 빠지면 배포 잡의 "PROD_ENV 키 검사" 단계에서 멈춥니다.
 
