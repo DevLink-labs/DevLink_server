@@ -12,4 +12,9 @@ public interface TaskEventRepository extends JpaRepository<TaskEvent, Long> {
     boolean existsByTaskIdAndEventType(Long taskId, TaskEventType eventType);
 
     List<TaskEvent> findByTaskIdOrderByCreatedAtAsc(Long taskId);
+
+    List<TaskEvent> findByTaskIdOrderBySequenceAsc(Long taskId);
+
+    Optional<TaskEvent> findByTaskIdAndAuthorAgentIdAndRequestKey(
+            Long taskId, Long authorAgentId, String requestKey);
 }

@@ -23,6 +23,7 @@ services:
             DB_PASSWORD: ${DB_PASSWORD:-devlink}
             CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://devlinkfrontend.vercel.app,https://devlink.ai.kr}
             WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:-http://localhost:3000}
+            TASK_MESSAGE_CURSOR_SECRET: ${TASK_MESSAGE_CURSOR_SECRET:-}
         ports:
             - "8080:8080"
         depends_on:

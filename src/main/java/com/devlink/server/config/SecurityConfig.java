@@ -79,7 +79,7 @@ public class SecurityConfig {
                 // 목록 GET의 Authorization 헤더가 있으면 Agent 인증 우선 적용
                 .requestMatchers(request -> agentList.matches(request)
                         && request.getHeader(HttpHeaders.AUTHORIZATION) != null)
-                .requestMatchers("/api/v1/agents/me")
+                .requestMatchers("/api/v1/agents/me", "/api/v1/agents/me/task-messages")
                 .requestMatchers("/api/v1/tasks", "/api/v1/tasks/**")
         		.requestMatchers(
         				HttpMethod.GET,

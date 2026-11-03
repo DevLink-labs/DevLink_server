@@ -2,8 +2,6 @@
 
 DevLink 중앙 서버 단독 저장소입니다. Java 21 · Spring Boot 3.5.16 · Gradle(Groovy DSL) · PostgreSQL 16 · Flyway 단일 모듈이며, 인증·팀·Agent / 작업 생성·상태 / 작업 결과·조회 / 실시간 연결·라우팅 담당자가 기능을 붙여 나갈 공통 기반입니다.
 
-> **현재 미확정**: ERD, 인증 방식(세션/JWT). 확정 전까지 마이그레이션·엔티티·인증 필터를 추가하지 않습니다. 비즈니스 로직은 아직 없습니다.
-
 ## 1. 필요 환경
 
 - Java 21
@@ -118,20 +116,13 @@ domain/
 - 모든 프로필에서 `ddl-auto=validate`, Flyway `validate-on-migrate=true`, `baseline-on-migrate=false`. prod는 `clean-disabled=true`.
 - 엔티티는 마이그레이션 스키마의 타입·길이·널 허용과 일치시킵니다. `updated_at`은 BaseTimeEntity Auditing으로 채웁니다.
 
-## 6. 확정 후 수정할 지점
+## 6. 확정 사항
 
-**ERD 확정 시**
-- `V1__init_schema.sql` 추가 (TIMESTAMPTZ + Instant, 모든 FK 인덱스, Agent 토큰 해시만 저장, 작업 상태 CHECK, 멱등 키 UNIQUE)
-- `domain/`에 엔티티 추가
-- `DevLinkServerIntegrationTest`의 "마이그레이션·테이블 없음" 단정을 V1 적용·테이블 존재 검증으로 교체
+**ERD 확정 사항**
+- `users`, `teams`, `team_members`, `agents`, `tasks`, `task_files`, `task_events`, `outbox_events` 8개 테이블을 적용
 
-**인증 방식 확정 시**
-- `SecurityConfig` TODO 두 곳 (세션/CSRF 정책, 인증 필터 연결)
-- `filter/`에 인증 필터·Agent 토큰 필터 추가
-- `WebSocketConfig` 핸드셰이크 인증, STOMP 여부
-- `.env.example`, `deploy/.prod.env.example`, Secret `PROD_ENV`, `deploy/docker-compose.prod.yml`에 쿠키 또는 JWT 변수 추가
-- 세션 또는 리프레시 토큰 테이블 마이그레이션
-- [보안 전략 문서 4절](docs/security-strategy.md#4-인증-방식-확정-후-결정할-사항) 갱신
+**보안 확정 사항**
+- 사용자 API는 세션 쿠키 + CSRF 토큰, `/ws/broker`와 작업 API는 `Authorization: Bearer <Agent 토큰>`으로 인증하며 토큰은 SHA-256 해시만 저장합니다. 상세는 [보안 전략](docs/security-strategy.md)을 참고합니다.
 
 ## 7. CI/CD · 배포
 

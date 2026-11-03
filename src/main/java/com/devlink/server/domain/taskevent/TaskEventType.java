@@ -11,6 +11,9 @@ public enum TaskEventType {
     // 3. 작업 실행
     STATUS_CHANGED,
     PROGRESS,
+    // 기존 Task에 누적하는 질문·답변이며 별도의 Task를 생성하지 않는다.
+    QUESTION,
+    ANSWER,
     // 4. 알림 실패
     NOTIFY_FAILED
 }
