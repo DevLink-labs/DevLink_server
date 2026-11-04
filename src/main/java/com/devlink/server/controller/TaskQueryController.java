@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import com.devlink.server.dto.task.WebTaskDetailResponse;
+import com.devlink.server.dto.task.WebTaskHistoryResponse;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -29,6 +30,19 @@ public class TaskQueryController {
 
     private final TaskQueryService taskQueryService;
 
+    
+    @GetMapping("/web/teams/{teamId}/tasks/{taskId}/events")
+    public ResponseEntity<ApiResponse<WebTaskHistoryResponse>> getWebTaskHistory(
+    		@PathVariable @Positive Long teamId,
+    		@PathVariable @Positive Long taskId,
+    		@AuthenticationPrincipal UserPrincipal user,
+    		@Valid @ModelAttribute TaskEventListRequest request){
+    	WebTaskHistoryResponse response = taskQueryService.getWebTaskHistory(teamId, taskId, user, request);
+    	
+    	return ResponseEntity.ok(ApiResponse.success(response));
+    	
+    }
+    
     @GetMapping("/web/teams/{teamId}/tasks/{taskId}")
     public ResponseEntity<ApiResponse<WebTaskDetailResponse>> getWebTask(
     		@PathVariable @Positive Long teamId,
