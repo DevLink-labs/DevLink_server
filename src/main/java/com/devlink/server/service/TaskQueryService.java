@@ -30,7 +30,7 @@ import java.util.HashSet;
 import com.devlink.server.dto.task.TaskListResponse;
 import java.util.ArrayList;
 import java.util.Collections;
-
+import com.devlink.server.dto.task.WebTaskDetailResponse;
 import org.springframework.transaction.annotation.Transactional;
 import com.devlink.server.repository.TaskFileRepository;
 import com.devlink.server.repository.TaskEventRepository;
@@ -55,6 +55,60 @@ public class TaskQueryService {
 	private final TaskFileRepository taskFileRepository;
 	private final TaskEventRepository taskEventRepository;
 	private final TeamAuthorizationService teamAuthorizationService;
+	
+	@Transactional(readOnly = true)
+	public WebTaskDetailResponse getWebTask(
+			Long teamId,
+			Long taskId,
+			UserPrincipal user) {
+		if(user == null) {
+			throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
+		}
+		//로그인 사용자가 요청한 팀의 현재 회원인지 확인
+		teamAuthorizationService.requireTeamMember(user.userId(), teamId);
+		
+		Task task = findTask(taskId);
+		
+		//경로의 팀과 작업이 속한 팀이 같은지 확인
+		if(!task.getTeamId().equals(teamId)) {
+			throw new BusinessException(ErrorCode.ACCESS_DENIED);
+		}
+		
+		Map<Long,Agent> agentsById = findAgents(List.of(task));
+		
+		Agent requesterAgent = agentsById.get(task.getRequesterAgentId());
+		Agent receiverAgent = agentsById.get(task.getReceiverAgentId());
+		
+		if(requesterAgent == null || receiverAgent == null) {
+			throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
+		}
+		
+		String teamName = teamRepository.findById(task.getTeamId())
+				.orElseThrow(() -> 
+				new BusinessException(ErrorCode.RESOURCE_NOT_FOUND))
+				.getName();
+		
+		LocalDateTime lastActivityAt = findLastActivityTimes(List.of(task))
+				.get(task.getId());
+		
+		return new WebTaskDetailResponse(
+				task.getId(),
+				task.getTeamId(),
+				teamName,
+				task.getTaskSummary(),
+				new TaskAgentResponse(
+						requesterAgent.getId(),
+						requesterAgent.getName())
+				,new TaskAgentResponse(
+						receiverAgent.getId(),
+						receiverAgent.getName()),
+				task.getStatus(),
+				task.getCreatedAt(),
+				task.getStartedAt(),
+				task.getCompletedAt(),
+				lastActivityAt
+				); 
+	}
 	
 	@Transactional(readOnly = true)
 	public TaskListResponse getWebTasks(

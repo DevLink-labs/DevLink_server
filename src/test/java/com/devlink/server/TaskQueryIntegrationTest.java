@@ -83,6 +83,175 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
     private Map<String, Long> taskIds;
     private int taskSequence;
 
+    @ParameterizedTest
+    @CsvSource({"sentPending,PENDING,0,false,false", "sentInProgress,IN_PROGRESS,1,true,false",
+            "sentCompleted,COMPLETED,2,true,true", "sentFailed,FAILED,3,true,true",
+            "sentRejected,REJECTED,4,false,true"})
+    void webDetailReturnsOnlyHeaderFieldsForEveryStatus(String label, String status, int minute,
+            boolean hasStarted, boolean hasCompleted) throws Exception {
+        Long taskId = taskIds.get(label);
+        try (HttpClient client = loggedInClient(teammate)) {
+            JsonNode data = assertSuccess(webDetailGet(client, team.getId(), taskId));
+            List<String> fields = new ArrayList<>();
+            data.fieldNames().forEachRemaining(fields::add);
+            assertThat(fields).containsExactlyInAnyOrder("taskId", "teamId", "teamName", "taskSummary",
+                    "requesterAgent", "receiverAgent", "status", "createdAt", "startedAt",
+                    "completedAt", "lastActivityAt");
+            assertThat(data.path("taskId").asLong()).isEqualTo(taskId);
+            assertThat(data.path("teamId").asLong()).isEqualTo(team.getId());
+            assertThat(data.path("teamName").asText()).isEqualTo(team.getName());
+            assertNullableText(data.path("taskSummary"), null);
+            assertDetailAgent(data.path("requesterAgent"), callerAgent);
+            assertDetailAgent(data.path("receiverAgent"), teammateAgent);
+            assertThat(data.path("status").asText()).isEqualTo(status);
+            LocalDateTime createdAt = BASE_TIME.plusMinutes(minute);
+            assertTimestamp(data.path("createdAt"), createdAt);
+            assertTimestamp(data.path("startedAt"), hasStarted ? createdAt.plusSeconds(10) : null);
+            assertTimestamp(data.path("completedAt"), hasCompleted ? createdAt.plusSeconds(20) : null);
+            assertTimestamp(data.path("lastActivityAt"), createdAt);
+        }
+    }
+
+    @Test
+    void webDetailAllowsMemberWithoutAgentAndReturnsStoredSummaryAndCurrentNames() throws Exception {
+        User viewer = new TransactionTemplate(transactionManager).execute(tx -> {
+            User user = createUser("상세 조회 전용 팀원", passwordEncoder.encode(TEST_PASSWORD));
+            members.save(TeamMember.create(team.getId(), user.getId(), MemberRole.MEMBER));
+            return user;
+        });
+        Long taskId = taskIds.get("sentCompleted");
+        String summary = "게시글 응답 지연 분석\n  검증 항목 😀";
+        jdbc.update("update tasks set task_summary = ? where id = ?", summary, taskId);
+        jdbc.update("update teams set name = ? where id = ?", "변경된 팀 이름", team.getId());
+        jdbc.update("update agents set name = ? where id = ?", "변경된 요청 Agent", callerAgent.id());
+        jdbc.update("update agents set name = ? where id = ?", "변경된 수신 Agent", teammateAgent.id());
+        try (HttpClient client = loggedInClient(viewer)) {
+            JsonNode data = assertSuccess(webDetailGet(client, team.getId(), taskId));
+            assertNullableText(data.path("taskSummary"), summary);
+            assertThat(data.path("teamName").asText()).isEqualTo("변경된 팀 이름");
+            assertThat(data.path("requesterAgent").path("name").asText()).isEqualTo("변경된 요청 Agent");
+            assertThat(data.path("receiverAgent").path("name").asText()).isEqualTo("변경된 수신 Agent");
+            JsonNode common = assertSuccess(get(detailPath(taskId), callerAgent.token()));
+            data.fieldNames().forEachRemaining(field -> assertThat(data.get(field)).isEqualTo(common.get(field)));
+            assertThat(common.path("resultText").asText()).isEqualTo("테스트 작업 완료");
+            assertThat(common.path("prompt").asText()).isEqualTo("목록 조회 테스트: sentCompleted");
+            assertCurrentUser(client, viewer.getId());
+        }
+    }
+
+    @Test
+    void webDetailSupportsSameRequesterAndReceiverAgent() throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            JsonNode data = assertSuccess(webDetailGet(client, team.getId(), taskIds.get("selfPending")));
+            assertDetailAgent(data.path("requesterAgent"), callerAgent);
+            assertDetailAgent(data.path("receiverAgent"), callerAgent);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "-1", "abc", "9223372036854775808"})
+    void webDetailRejectsInvalidPathIds(String invalidId) throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            for (String path : List.of("/api/v1/web/teams/" + invalidId + "/tasks/" + taskIds.get("sentCompleted"),
+                    webListPath(team.getId()) + "/" + invalidId)) {
+                assertError(client.send(request(path).GET().build(), HttpResponse.BodyHandlers.ofString()),
+                        400, "VALIDATION_FAILED");
+            }
+        }
+    }
+
+    @Test
+    void webDetailRequiresUserSessionInsteadOfAgentToken() throws Exception {
+        String path = webDetailPath(team.getId(), taskIds.get("sentCompleted"));
+        assertError(get(path, null), 401, "AUTHENTICATION_REQUIRED");
+        assertError(get(path, callerAgent.token()), 401, "AUTHENTICATION_REQUIRED");
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            assertError(client.send(request(path).header("Cookie", "JSESSIONID=invalid-session").GET().build(),
+                    HttpResponse.BodyHandlers.ofString()), 401, "AUTHENTICATION_REQUIRED");
+        }
+    }
+
+    @Test
+    void webDetailRejectsNonMemberEvenWithParticipatingAgentToken() throws Exception {
+        try (HttpClient client = loggedInClient(outsider)) {
+            assertError(client.send(request(webDetailPath(team.getId(), taskIds.get("sentCompleted")))
+                    .header("Authorization", "Bearer " + callerAgent.token()).GET().build(),
+                    HttpResponse.BodyHandlers.ofString()), 403, "ACCESS_DENIED");
+            assertCurrentUser(client, outsider.getId());
+        }
+    }
+
+    @Test
+    void webDetailRejectsTeamMismatchEvenWhenUserBelongsToBothTeams() throws Exception {
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx ->
+                members.save(TeamMember.create(otherTeam.getId(), owner.getId(), MemberRole.MEMBER)));
+        try (HttpClient client = loggedInClient(owner)) {
+            assertError(webDetailGet(client, team.getId(), taskIds.get("otherTeamPending")), 403, "ACCESS_DENIED");
+            assertError(webDetailGet(client, otherTeam.getId(), taskIds.get("sentCompleted")), 403, "ACCESS_DENIED");
+            JsonNode allowed = assertSuccess(webDetailGet(client, otherTeam.getId(), taskIds.get("otherTeamPending")));
+            assertThat(allowed.path("teamId").asLong()).isEqualTo(otherTeam.getId());
+        }
+    }
+
+    @Test
+    void webDetailReturnsNotFoundForMissingTeamOrTask() throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            assertError(webDetailGet(client, Long.MAX_VALUE, taskIds.get("sentCompleted")), 404, "RESOURCE_NOT_FOUND");
+            assertError(webDetailGet(client, team.getId(), Long.MAX_VALUE), 404, "RESOURCE_NOT_FOUND");
+        }
+    }
+
+    @Test
+    void webDetailRechecksMembershipAfterTeamDeparture() throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            assertSuccess(webDetailGet(client, team.getId(), taskIds.get("sentCompleted")));
+            jdbc.update("delete from team_members where team_id = ? and user_id = ?", team.getId(), owner.getId());
+            assertError(webDetailGet(client, team.getId(), taskIds.get("sentCompleted")), 403, "ACCESS_DENIED");
+        }
+    }
+
+    @Test
+    void webDetailRefreshesActivityWithoutReturningOrChangingHistoryAndFiles() throws Exception {
+        Long taskId = taskIds.get("sentInProgress");
+        try (HttpClient client = loggedInClient(owner)) {
+            JsonNode first = assertSuccess(webDetailGet(client, team.getId(), taskId));
+            assertTimestamp(first.path("lastActivityAt"), BASE_TIME.plusMinutes(1));
+            new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+                createEvent(taskId, TaskEventType.STATUS_CHANGED, "작업 수락", BASE_TIME.plusMinutes(15));
+                createEvent(taskId, TaskEventType.ACK_RECEIVED, null, BASE_TIME.plusHours(3));
+                createEvent(taskId, TaskEventType.PROGRESS, "진행 기록", BASE_TIME.plusHours(4));
+                taskFiles.saveAndFlush(TaskFile.of(taskId, "src/Example.java", ChangeType.MODIFIED, "- old\n+ new"));
+            });
+            Map<String, Object> taskBefore = jdbc.queryForMap("select * from tasks where id = ?", taskId);
+            List<Map<String, Object>> eventsBefore = jdbc.queryForList(
+                    "select * from task_events where task_id = ? order by sequence", taskId);
+            List<Map<String, Object>> filesBefore = jdbc.queryForList("select * from task_files where task_id = ?", taskId);
+
+            JsonNode refreshed = assertSuccess(webDetailGet(client, team.getId(), taskId));
+            assertTimestamp(refreshed.path("lastActivityAt"), BASE_TIME.plusMinutes(15));
+            JsonNode list = assertSuccess(webGet(client, team.getId(), ""));
+            assertThat(refreshed.path("lastActivityAt")).isEqualTo(findItem(list, "sentInProgress").path("lastActivityAt"));
+            assertThat(refreshed.has("events")).isFalse();
+            assertThat(refreshed.has("taskFiles")).isFalse();
+            assertThat(assertSuccess(webDetailGet(client, team.getId(), taskId))).isEqualTo(refreshed);
+            assertThat(jdbc.queryForMap("select * from tasks where id = ?", taskId)).isEqualTo(taskBefore);
+            assertThat(jdbc.queryForList("select * from task_events where task_id = ? order by sequence", taskId))
+                    .isEqualTo(eventsBefore);
+            assertThat(jdbc.queryForList("select * from task_files where task_id = ?", taskId)).isEqualTo(filesBefore);
+            JsonNode common = assertSuccess(get(detailPath(taskId), callerAgent.token()));
+            assertThat(common.path("events").size()).isEqualTo(3);
+            assertThat(common.path("taskFiles").size()).isEqualTo(1);
+        }
+    }
+
+    private String webDetailPath(Long teamId, Long taskId) {
+        return webListPath(teamId) + "/" + taskId;
+    }
+
+    private HttpResponse<String> webDetailGet(HttpClient client, Long teamId, Long taskId) throws Exception {
+        return client.send(request(webDetailPath(teamId, taskId)).GET().build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     @Test
     void webListAllowsTeamMemberWithoutAgentsAndMatchesCommonTeamResponse() throws Exception {
         User viewer = new TransactionTemplate(transactionManager).execute(tx -> {
@@ -440,6 +609,8 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             try (HttpClient client = loggedInClient(owner)) {
                 JsonNode web = assertSuccess(webGet(client, team.getId(), ""));
                 assertTimestamp(findItem(web, "sentPending").path("lastActivityAt"), BASE_TIME.plusMinutes(20));
+                JsonNode webDetail = assertSuccess(webDetailGet(client, team.getId(), taskIds.get("sentPending")));
+                assertTimestamp(webDetail.path("lastActivityAt"), BASE_TIME.plusMinutes(20));
             }
         } finally {
             TimeZone.setDefault(originalZone);
