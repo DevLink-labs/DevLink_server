@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import jakarta.persistence.LockModeType;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -218,13 +218,15 @@ class TaskStatusIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void concurrentAcceptAndRejectCommitOnlyOneTransition() throws Exception {
+        // 두 요청이 모두 잠금 조회 직전에 도달한 뒤 잠금을 시도한다. 먼저 잠근 쪽이 커밋하면
+        // 나중 쪽은 갱신된 version을 읽어 TASK_VERSION_CONFLICT로 거절된다.
         var ready = new CountDownLatch(2);
         doAnswer(call -> {
-            var task = java.util.Optional.ofNullable(entityManager.find(Task.class, taskId));
             ready.countDown();
             if (!ready.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Concurrent read missing");
-            return task;
-        }).when(tasks).findById(taskId);
+            return java.util.Optional.ofNullable(
+                    entityManager.find(Task.class, taskId, LockModeType.PESSIMISTIC_WRITE));
+        }).when(tasks).findByIdForUpdate(taskId);
         try (var executor = Executors.newFixedThreadPool(2)) {
             var accept = executor.submit(() -> service.changeStatus(taskId, agentId, request(TaskStatus.IN_PROGRESS, 0L)));
             var reject = executor.submit(() -> service.changeStatus(taskId, agentId, request(TaskStatus.REJECTED, 0L)));
@@ -235,7 +237,8 @@ class TaskStatusIntegrationTest extends AbstractIntegrationTest {
                     assertThat(result.get(20, TimeUnit.SECONDS).version()).isEqualTo(1L);
                     successes++;
                 } catch (ExecutionException exception) {
-                    assertThat(exception.getCause()).isInstanceOf(ObjectOptimisticLockingFailureException.class);
+                    assertThat(exception.getCause()).isInstanceOfSatisfying(BusinessException.class,
+                            cause -> assertThat(cause.getErrorCode()).isEqualTo(ErrorCode.TASK_VERSION_CONFLICT));
                     conflicts++;
                 }
             }

@@ -508,7 +508,7 @@ class AgentTokenIntegrationTest extends AbstractIntegrationTest {
 
         private long createAgent(long teamId) throws Exception {
             var response = mutate("POST", "/api/v1/agents/teams/" + teamId, Map.of(
-                    "name", "Token agent", "roleDescription", "Agent token integration",
+                    "name", "Token agent " + UUID.randomUUID(), "roleDescription", "Agent token integration",
                     "toolType", "CODEX", "projectName", "devlink"));
             assertSuccess(response, 201);
             return response.body().path("data").path("agentId").asLong();

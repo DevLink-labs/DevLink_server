@@ -314,6 +314,85 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void summaryIsStoredTrimmed() {
+        var withSummary = new CreateTaskRequest(request.requestKey(), agentId, "  작업 요약\n둘째 줄  ", request.prompt());
+        var created = service.create(teamId, agentId, withSummary);
+        assertThat(created.replayed()).isFalse();
+        assertThat(tasks.findById(created.taskId()).orElseThrow().getTaskSummary()).isEqualTo("작업 요약\n둘째 줄");
+    }
+
+    @Test
+    void missingSummaryIsStoredAsNull() {
+        var created = service.create(teamId, agentId, request);
+        assertThat(tasks.findById(created.taskId()).orElseThrow().getTaskSummary()).isNull();
+    }
+
+    @Test
+    void blankSummaryIsRejectedBeforeSavingTask() {
+        var blank = new CreateTaskRequest(request.requestKey(), agentId, "   ", request.prompt());
+        assertThatThrownBy(() -> service.create(teamId, agentId, blank))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED));
+        assertThat(tasks.findByRequesterAgentIdAndRequestKey(agentId, request.requestKey())).isEmpty();
+        verify(routing, never()).sendTask(anyLong());
+    }
+
+    @Test
+    void summaryLengthIsCountedInCodePoints() {
+        // 😀 is two UTF-16 chars but one code point: 1,000 of them pass, 1,001 fail.
+        String limit = "😀".repeat(1000);
+        var atLimit = new CreateTaskRequest(request.requestKey(), agentId, limit, request.prompt());
+        var created = service.create(teamId, agentId, atLimit);
+        assertThat(tasks.findById(created.taskId()).orElseThrow().getTaskSummary()).isEqualTo(limit);
+
+        var over = new CreateTaskRequest(UUID.randomUUID().toString(), agentId, limit + "😀", request.prompt());
+        assertThatThrownBy(() -> service.create(teamId, agentId, over))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED));
+        assertThat(tasks.findByRequesterAgentIdAndRequestKey(agentId, over.requestKey())).isEmpty();
+    }
+
+    @Test
+    void sameKeyWithDifferentSummaryConflicts() {
+        service.create(teamId, agentId, new CreateTaskRequest(request.requestKey(), agentId, "요약", request.prompt()));
+        var changed = new CreateTaskRequest(request.requestKey(), agentId, "다른 요약", request.prompt());
+        assertThatThrownBy(() -> service.create(teamId, agentId, changed))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.REQUEST_KEY_CONFLICT));
+        // A summary added to a key that was created without one is also a different payload.
+        var withoutSummary = new CreateTaskRequest(UUID.randomUUID().toString(), agentId, request.prompt());
+        service.create(teamId, agentId, withoutSummary);
+        var added = new CreateTaskRequest(withoutSummary.requestKey(), agentId, "요약", request.prompt());
+        assertThatThrownBy(() -> service.create(teamId, agentId, added))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.REQUEST_KEY_CONFLICT));
+    }
+
+    @Test
+    void replayWithWhitespaceVariantSummaryIsAccepted() {
+        var created = service.create(teamId, agentId,
+                new CreateTaskRequest(request.requestKey(), agentId, "요약", request.prompt()));
+        var replay = service.create(teamId, agentId,
+                new CreateTaskRequest(request.requestKey(), agentId, "  요약\t", request.prompt()));
+        assertThat(replay.replayed()).isTrue();
+        assertThat(replay.taskId()).isEqualTo(created.taskId());
+        assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(teamId)).hasSize(1);
+    }
+
+    @Test
+    void summarySurvivesStatusChangesAndCompletion() {
+        var created = service.create(teamId, agentId,
+                new CreateTaskRequest(request.requestKey(), agentId, "요약", request.prompt()));
+        var task = tasks.findById(created.taskId()).orElseThrow();
+        task.accept(agentId);
+        task.complete(agentId, "done");
+        tasks.saveAndFlush(task);
+        var reloaded = tasks.findById(created.taskId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(TaskStatus.COMPLETED);
+        assertThat(reloaded.getTaskSummary()).isEqualTo("요약");
+    }
+
+    @Test
     void concurrentInsertLoserRecoversAsReplayAndOnlyWinnerDelivers() throws Exception {
         var ready = new CountDownLatch(2);
         // Force both requests past the same empty pre-check once; INSERT, rollback and the

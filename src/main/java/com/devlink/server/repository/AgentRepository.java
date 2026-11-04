@@ -13,7 +13,11 @@ public interface AgentRepository extends JpaRepository<Agent, Long> {
     List<Agent> findByTeamId(Long teamId);
 
 
-    @Query("select agent from Agent agent where agent.teamId = :teamId and agent.ownerUserId = :ownerUserId")
+    @Query("""
+            select agent from Agent agent
+            where agent.teamId = :teamId and agent.ownerUserId = :ownerUserId
+            order by agent.id
+            """)
     
     //해당 팀에서 사용자가 소유한 Agent 목록 조회
     List<Agent> findUserAgentInTeam(

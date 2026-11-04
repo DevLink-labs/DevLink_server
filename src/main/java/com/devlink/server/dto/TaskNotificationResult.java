@@ -6,6 +6,7 @@ public record TaskNotificationResult(long taskId, String eventId, Status status)
         SENT,
         INVALID_EVENT,
         REQUESTER_UNAVAILABLE,
+        RECIPIENT_UNAVAILABLE,
         CONNECTION_UNAVAILABLE,
         CONNECTION_CHANGED,
         TRANSPORT_ERROR,

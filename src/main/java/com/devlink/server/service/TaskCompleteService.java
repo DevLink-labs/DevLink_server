@@ -22,65 +22,65 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class TaskCompleteService {
-	
+
     private final TaskRepository taskRepository;
     private final TaskFileRepository taskFileRepository;
     private final TaskEventRepository taskEventRepository;
     private final TeamAuthorizationService teamAuthorizationService;
     private final TaskCompletionOutboxWriter taskCompletionOutboxWriter;
-    
+
     @Transactional
     public TaskCompleteResponse complete(
     		Long taskId,
     		AgentPrincipal agent,
     		TaskCompleteRequest request) {
     	validateAgent(agent);
-    	
+
     	Task task = findTask(taskId);
-    	
+
     	validatePermission(task, agent);
     	validateCompletion(task, request);
-    	
+
     	TaskStatus previousStatus = task.getStatus();
-    	
+
     	task.complete(agent.agentId(), request.resultText());
-    	
+
     	saveTaskFiles(task.getId(), request.taskFiles());
     	saveCompletionEvent(task, previousStatus);
-    	
+
     	taskCompletionOutboxWriter.enqueue(task);
-    	
+
     	return new TaskCompleteResponse(
     			task.getId(),
     			task.getStatus(),
     			task.getVersion(),
     			task.getCompletedAt());
-    	
+
     }
-    
+
     private void saveCompletionEvent(
     	Task task,
     	TaskStatus previousStatus) {
     	taskEventRepository.save(TaskEvent.of(
-    			task.getId(), 
-    			TaskEventType.STATUS_CHANGED, 
+    			task.getId(),
+    			TaskEventType.STATUS_CHANGED,
     			previousStatus + " → " +task.getStatus()+": 작업 완료"));
     }
-    
+
     private void saveTaskFiles(
     		Long taskId,
     		List<TaskFileRequest> taskFiles) {
     	List<TaskFile> files = taskFiles.stream()
     			.map(file -> TaskFile.of(
-    					taskId, 
-    					file.relativePath(), 
-    					file.changeType(), 
+    					taskId,
+    					file.relativePath(),
+    					file.changeType(),
     					file.diffText()))
     			.toList();
-    	
+
     	taskFileRepository.saveAll(files);
     }
-    
+
     private void validateCompletion(
     		Task task,
     		TaskCompleteRequest request) {
@@ -91,7 +91,7 @@ public class TaskCompleteService {
     		throw new BusinessException(ErrorCode.TASK_STATE_CONFLICT);
     	}
     }
-    
+
     private void validatePermission(
     		Task task,
     		AgentPrincipal agent) {
@@ -104,19 +104,19 @@ public class TaskCompleteService {
     		throw new BusinessException(ErrorCode.ACCESS_DENIED);
     	}
     }
-    
+
     private void validateAgent(AgentPrincipal agent) {
     	if(agent == null||agent.agentId()<=0
     			||agent.ownerUserId()<=0||agent.teamId()<=0) {
     		throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
     	}
     }
-    
+
     private Task findTask(Long taskId) {
     	if(taskId == null || taskId <= 0) {
     		throw new BusinessException(ErrorCode.VALIDATION_FAILED);
     	}
-    	return taskRepository.findById(taskId)
+    	return taskRepository.findByIdForUpdate(taskId)
     			.orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
     }
 

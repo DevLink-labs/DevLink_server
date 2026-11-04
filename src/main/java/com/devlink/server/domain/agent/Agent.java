@@ -10,7 +10,10 @@ import org.hibernate.type.SqlTypes;
 
 // Bounded context: identity.
 @Entity
-@Table(name = "agents", uniqueConstraints = @UniqueConstraint(name = "uk_agents_connection_token_hash", columnNames = {"connection_token_hash"}))
+@Table(name = "agents", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_agents_connection_token_hash", columnNames = {"connection_token_hash"}),
+        @UniqueConstraint(name = "uk_agents_team_name_tool_type", columnNames = {"team_id", "name", "tool_type"})
+})
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Agent {
@@ -67,6 +70,20 @@ public class Agent {
         entity.projectName = projectName;
         entity.status = AgentStatus.OFFLINE;
         return entity;
+    }
+
+    public void updateProfile(String name, String roleDescription, String projectName) {
+        if (name != null) {
+            requireValue(name, "name");
+            this.name = name;
+        }
+        if (roleDescription != null) {
+            this.roleDescription = roleDescription.isBlank() ? null : roleDescription;
+        }
+        if (projectName != null) {
+            requireValue(projectName, "projectName");
+            this.projectName = projectName;
+        }
     }
 
     public void markOnline(LocalDateTime seenAt) {

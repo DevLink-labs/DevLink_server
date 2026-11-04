@@ -37,6 +37,10 @@ public class Task {
     @Column(name = "prompt", length = 255, nullable = false, columnDefinition = "TEXT")
     private String prompt;
 
+    // 등록 시 요약. 구버전 요청은 null이며 질문·답변·완료로 변경하지 않는다.
+    @Column(name = "task_summary", length = 255, nullable = true, columnDefinition = "TEXT")
+    private String taskSummary;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 20, nullable = false)
     private TaskStatus status;
@@ -64,12 +68,20 @@ public class Task {
     private LocalDateTime completedAt;
 
     public static Task create(String requestKey, Long teamId, Long requesterAgentId, Long requesterUserId, Long receiverAgentId, String prompt) {
+        return create(requestKey, teamId, requesterAgentId, requesterUserId, receiverAgentId, prompt, null);
+    }
+
+    /** taskSummary는 호출자가 앞뒤 공백을 제거해 전달한다. null은 요약 미등록이다. */
+    public static Task create(String requestKey, Long teamId, Long requesterAgentId, Long requesterUserId, Long receiverAgentId, String prompt, String taskSummary) {
         requireValue(requestKey, "requestKey");
         requireValue(teamId, "teamId");
         requireValue(requesterAgentId, "requesterAgentId");
         requireValue(requesterUserId, "requesterUserId");
         requireValue(receiverAgentId, "receiverAgentId");
         requireValue(prompt, "prompt");
+        if (taskSummary != null) {
+            requireValue(taskSummary, "taskSummary");
+        }
         Task entity = new Task();
         entity.requestKey = requestKey;
         entity.teamId = teamId;
@@ -77,6 +89,7 @@ public class Task {
         entity.requesterUserId = requesterUserId;
         entity.receiverAgentId = receiverAgentId;
         entity.prompt = prompt;
+        entity.taskSummary = taskSummary;
         entity.status = TaskStatus.PENDING;
         return entity;
     }

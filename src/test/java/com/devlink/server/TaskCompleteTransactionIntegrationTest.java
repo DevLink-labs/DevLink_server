@@ -38,6 +38,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.persistence.Query;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -288,20 +289,19 @@ class TaskCompleteTransactionIntegrationTest extends AbstractIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"completion", "failure"})
-    void concurrentRequestsReadingSameVersionCommitOnlyOneResult(String opponent) throws Exception {
+    void concurrentRequestsCommitOnlyOneResult(String opponent) throws Exception {
+        // 두 요청이 모두 잠금 조회 직전에 도달한 뒤 잠금을 시도한다. 먼저 잠근 쪽이 커밋하면
+        // 나중 쪽은 갱신된 version을 읽어 TASK_VERSION_CONFLICT로 거절된다.
         CountDownLatch bothLoaded = new CountDownLatch(2);
         AtomicInteger reads = new AtomicInteger();
         doAnswer(call -> {
-            Task task = entityManager.find(Task.class, taskId);
-            assertThat(task.getStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
-            assertThat(task.getVersion()).isEqualTo(originalVersion);
             reads.incrementAndGet();
             bothLoaded.countDown();
             if (!bothLoaded.await(10, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("Both requests must load the original version");
+                throw new IllegalStateException("Both requests must reach the locked read");
             }
-            return Optional.of(task);
-        }).when(tasks).findById(eq(taskId));
+            return Optional.ofNullable(entityManager.find(Task.class, taskId, LockModeType.PESSIMISTIC_WRITE));
+        }).when(tasks).findByIdForUpdate(eq(taskId));
 
         ObjectNode firstBody = completionBody("동시 완료 A", "src/winner-a.java");
         ObjectNode secondBody;

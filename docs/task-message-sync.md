@@ -92,7 +92,10 @@ DB 자체나 V1~V7 SQL은 수정하지 않는다.
 - eventId로 중복을 제거하고, 실행 중 새 Pull 신호는 모아서 처리한다.
 - 로컬 보관은 Agent 읽음·답변·작업 재개와 별개다. 본문은 get_task_result로 확인한다.
 
-질문·답변 POST, Q&A outbox 저장·발행, WebSocket 신호 및 브로커 타이머는 별도 연동 범위다.
+질문·답변 POST는 TaskEvent와 Outbox를 같은 트랜잭션에 저장한다. 서버의 기존 Outbox 배치가
+`TASK_QUESTION_CREATED`·`TASK_ANSWER_CREATED`를 상대 Agent에게 WebSocket으로 발행한다.
+알림 형식과 검증·재시도 규칙은 [질문·답변 알림](task-message-notification.md)을 참고한다.
+브로커의 알림 수신 후 Pull 실행과 안전망 타이머는 브로커 측 구현 범위다.
 
 ## 검증
 

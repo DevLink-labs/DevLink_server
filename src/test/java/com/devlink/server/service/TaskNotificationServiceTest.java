@@ -16,6 +16,8 @@ import com.devlink.server.realtime.BrokerMessageSender;
 import com.devlink.server.realtime.ConnectionRegistry;
 import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.TaskRepository;
+import com.devlink.server.repository.TaskEventRepository;
+import com.devlink.server.repository.TeamMemberRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -45,7 +47,7 @@ class TaskNotificationServiceTest {
     private final BrokerMessageSender sender = new BrokerMessageSender(connections, mapper);
     private final AgentPresenceService presence = mock(AgentPresenceService.class);
     private final TaskNotificationService notifications = new TaskNotificationService(
-            tasks, agents, connections, sender, presence);
+            tasks, agents, mock(TaskEventRepository.class), mock(TeamMemberRepository.class), connections, sender, presence);
     private final Task task = Task.create("private-key", 31L, 1L, 20L, 2L, "private-prompt");
     private final Agent requester = Agent.create(31L, 20L, "Requester", null, ToolType.CODEX, "server");
 

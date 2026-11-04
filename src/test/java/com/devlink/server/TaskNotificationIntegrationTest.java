@@ -28,13 +28,19 @@ import com.devlink.server.domain.task.TaskStatus;
 import com.devlink.server.domain.taskfile.ChangeType;
 import com.devlink.server.domain.taskfile.TaskFile;
 import com.devlink.server.domain.team.Team;
+import com.devlink.server.domain.teammember.MemberRole;
+import com.devlink.server.domain.teammember.TeamMember;
 import com.devlink.server.domain.user.User;
 import com.devlink.server.dto.ChangeTaskStatusRequest;
+import com.devlink.server.dto.task.TaskQuestionRequest;
+import com.devlink.server.dto.task.TaskAnswerRequest;
 import com.devlink.server.realtime.ConnectionRegistry;
 import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.OutboxEventRepository;
 import com.devlink.server.repository.TaskFileRepository;
 import com.devlink.server.repository.TaskRepository;
+import com.devlink.server.repository.TaskEventRepository;
+import com.devlink.server.repository.TeamMemberRepository;
 import com.devlink.server.repository.TeamRepository;
 import com.devlink.server.repository.UserRepository;
 import com.devlink.server.service.AgentTokenVerifier;
@@ -44,18 +50,25 @@ import com.devlink.server.service.TaskAckService;
 import com.devlink.server.service.TaskCompletionOutboxWriter;
 import com.devlink.server.service.TaskStatusService;
 import com.devlink.server.service.TaskNotificationService;
+import com.devlink.server.service.TaskMessageService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.IllegalTransactionStateException;
@@ -79,6 +92,11 @@ import static org.mockito.Mockito.verify;
 @Import(TaskNotificationIntegrationTest.Fixture.class)
 class TaskNotificationIntegrationTest extends AbstractIntegrationTest {
     @Autowired private TaskRepository tasks;
+    @Autowired private TaskEventRepository events;
+    @Autowired private TeamMemberRepository members;
+    @Autowired private TaskMessageService messages;
+    @Autowired private TestRestTemplate rest;
+    @Autowired private JdbcTemplate jdbc;
     @Autowired private AgentRepository agents;
     @Autowired private UserRepository users;
     @Autowired private TeamRepository teams;
@@ -338,6 +356,166 @@ class TaskNotificationIntegrationTest extends AbstractIntegrationTest {
                 .isInstanceOf(IllegalTransactionStateException.class);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void questionAndAnswerNotifyOppositeAgentsAndBrokerCanPullOriginalEvents(boolean requesterAsks) throws Exception {
+        startConversation();
+        Agent author = requesterAsks ? requester : receiver;
+        Agent recipient = requesterAsks ? receiver : requester;
+        String recipientToken = requesterAsks ? "receiver" : "requester";
+        String authorToken = requesterAsks ? "requester" : "receiver";
+        var request = new TaskQuestionRequest("question", "비공개 질문 본문");
+        try (var client = HttpClient.newHttpClient(); var req = connect(client, "requester", requester);
+                var other = connect(client, "receiver", receiver)) {
+            var question = messages.createQuestion(taskId, author.getId(), request);
+            assertThat(messages.createQuestion(taskId, author.getId(), request).replayed()).isTrue();
+            assertThat(outbox.count()).isEqualTo(1);
+            JsonNode storedQuestion = outbox.findAll().getFirst().getMessage();
+
+            assertThat(publisher.publishBatch()).isEqualTo(1);
+
+            Broker questionBroker = requesterAsks ? other : req;
+            Broker answerBroker = requesterAsks ? req : other;
+            assertThat(questionBroker.next()).isEqualTo(storedQuestion);
+            assertThat(answerBroker.messages.poll(150, TimeUnit.MILLISECONDS)).isNull();
+            assertThat(storedQuestion.path("type").asText()).isEqualTo("TASK_QUESTION_CREATED");
+            assertThat(storedQuestion.path("receiver_agent_id").asLong()).isEqualTo(recipient.getId());
+            assertThat(storedQuestion.path("payload").path("task_event_id").asText()).isEqualTo(question.eventId());
+            assertThat(storedQuestion.has("version")).isFalse();
+            assertThat(storedQuestion.toString()).doesNotContain("비공개 질문 본문");
+            // 브로커가 알림을 받고 Pull하면 같은 원본 ID의 도착 정보를 받는다.
+            JsonNode arrivals = pullMessages(recipientToken);
+            assertThat(arrivals).hasSize(1);
+            assertThat(arrivals.get(0).path("eventId").asText()).isEqualTo(question.eventId());
+            assertThat(arrivals.get(0).path("sequence").asText()).isEqualTo(question.sequence());
+
+            var answer = messages.createAnswer(taskId, recipient.getId(),
+                    new TaskAnswerRequest("answer", "비공개 답변 본문", question.eventId()));
+            assertThat(publisher.publishBatch()).isEqualTo(1);
+            JsonNode notification = answerBroker.next();
+            assertThat(notification.path("type").asText()).isEqualTo("TASK_ANSWER_CREATED");
+            assertThat(notification.path("receiver_agent_id").asLong()).isEqualTo(author.getId());
+            assertThat(notification.path("payload").path("task_event_id").asText()).isEqualTo(answer.eventId());
+            assertThat(questionBroker.messages.poll(150, TimeUnit.MILLISECONDS)).isNull();
+            assertThat(pullMessages(authorToken).get(0).path("eventId").asText()).isEqualTo(answer.eventId());
+            assertThat(outbox.findAll()).allSatisfy(event -> assertThat(event.getStatus()).isEqualTo(OutboxStatus.PUBLISHED));
+            assertThat(tasks.findById(taskId).orElseThrow().getStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
+            verify(acknowledgements, never()).register(anyLong(), anyString(), any(), any());
+        }
+    }
+
+    @Test
+    void questionRetryAfterReconnectKeepsStoredMessageAndOriginalEventId() throws Exception {
+        startConversation();
+        var question = messages.createQuestion(taskId, requester.getId(), new TaskQuestionRequest("q", "Question"));
+        var original = outbox.findAll().getFirst();
+        assertThat(publisher.publishBatch()).isEqualTo(1);
+        var pending = outbox.findById(original.getOutboxId()).orElseThrow();
+        assertThat(pending.getStatus()).isEqualTo(OutboxStatus.PENDING);
+        assertThat(pending.getLastError()).isEqualTo("CONNECTION_UNAVAILABLE");
+        assertThat(pullMessages("receiver").get(0).path("eventId").asText()).isEqualTo(question.eventId());
+        assertThat(publisher.publishBatch()).isZero();
+
+        clock.advance(100);
+        try (var client = HttpClient.newHttpClient(); var broker = connect(client, "receiver", receiver)) {
+            assertThat(publisher.publishBatch()).isEqualTo(1);
+            assertThat(broker.next()).isEqualTo(original.getMessage());
+        }
+        var published = outbox.findById(original.getOutboxId()).orElseThrow();
+        assertThat(published.getStatus()).isEqualTo(OutboxStatus.PUBLISHED);
+        assertThat(published.getAttemptCount()).isEqualTo(2);
+    }
+
+    @Test
+    void failedNotificationDoesNotPreventQuestionRecovery() {
+        startConversation();
+        var question = messages.createQuestion(taskId, requester.getId(), new TaskQuestionRequest("q", "Question"));
+        publisher.publishBatch();
+        clock.advance(100);
+        publisher.publishBatch();
+        clock.advance(200);
+        publisher.publishBatch();
+
+        assertThat(outbox.findAll().getFirst().getStatus()).isEqualTo(OutboxStatus.FAILED);
+        assertThat(pullMessages("receiver").get(0).path("eventId").asText()).isEqualTo(question.eventId());
+    }
+
+    @Test
+    void questionSavedBeforeTaskCompletionIsStillPublished() throws Exception {
+        startConversation();
+        messages.createQuestion(taskId, requester.getId(), new TaskQuestionRequest("q", "Question"));
+        var stored = outbox.findAll().getFirst().getMessage();
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx ->
+                tasks.findByIdForUpdate(taskId).orElseThrow().complete(receiver.getId(), "Done"));
+
+        try (var client = HttpClient.newHttpClient(); var broker = connect(client, "receiver", receiver)) {
+            assertThat(publisher.publishBatch()).isEqualTo(1);
+            assertThat(broker.next()).isEqualTo(stored);
+        }
+        assertThat(tasks.findById(taskId).orElseThrow().getStatus()).isEqualTo(TaskStatus.COMPLETED);
+    }
+
+    @Test
+    void notificationAddressedToAuthorFailsWithoutLeakingToEitherSocket() throws Exception {
+        startConversation();
+        var question = messages.createQuestion(taskId, requester.getId(), new TaskQuestionRequest("q", "Question"));
+        var stored = outbox.findAll().getFirst();
+        // 저장된 JSON의 수신자가 잘못된 상황을 재현하고 원본 작성자와 대조한다.
+        jdbc.update("UPDATE outbox_events SET message = jsonb_set(message, '{receiver_agent_id}', to_jsonb(CAST(? AS bigint))) WHERE outbox_id = ?",
+                requester.getId(), stored.getOutboxId());
+        try (var client = HttpClient.newHttpClient(); var req = connect(client, "requester", requester);
+                var other = connect(client, "receiver", receiver)) {
+            assertThat(publisher.publishBatch()).isEqualTo(1);
+            assertThat(req.messages.poll(150, TimeUnit.MILLISECONDS)).isNull();
+            assertThat(other.messages.poll(150, TimeUnit.MILLISECONDS)).isNull();
+        }
+        var failed = outbox.findById(stored.getOutboxId()).orElseThrow();
+        assertThat(failed.getStatus()).isEqualTo(OutboxStatus.FAILED);
+        assertThat(failed.getLastError()).isEqualTo("INVALID_EVENT");
+        assertThat(pullMessages("receiver").get(0).path("eventId").asText()).isEqualTo(question.eventId());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void messageIsInvisibleToPublisherUntilCommitAndRollbackRemovesIt(boolean rollback) throws Exception {
+        startConversation();
+        long eventCount = events.count();
+        try (var client = HttpClient.newHttpClient(); var broker = connect(client, "receiver", receiver)) {
+            new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+                messages.createQuestion(taskId, requester.getId(), new TaskQuestionRequest("q", "Question"));
+                // 다른 트랜잭션의 발행기는 미커밋 Outbox를 가져가면 안 된다.
+                try (var executor = Executors.newSingleThreadExecutor()) {
+                    assertThat(executor.submit(publisher::publishBatch).get(5, TimeUnit.SECONDS)).isZero();
+                } catch (Exception exception) {
+                    throw new IllegalStateException(exception);
+                }
+                if (rollback) tx.setRollbackOnly();
+            });
+            assertThat(publisher.publishBatch()).isEqualTo(rollback ? 0 : 1);
+            if (rollback) {
+                assertThat(broker.messages.poll(150, TimeUnit.MILLISECONDS)).isNull();
+                assertThat(outbox.count()).isZero();
+                assertThat(events.count()).isEqualTo(eventCount);
+            } else {
+                assertThat(broker.next().path("type").asText()).isEqualTo("TASK_QUESTION_CREATED");
+            }
+        }
+    }
+
+    private void startConversation() {
+        change(TaskStatus.IN_PROGRESS, 0);
+        outbox.deleteAllInBatch();
+    }
+
+    private JsonNode pullMessages(String token) {
+        var headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+        var response = rest.exchange("/api/v1/agents/me/task-messages", HttpMethod.GET,
+                new HttpEntity<>(headers), JsonNode.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        return response.getBody().path("data").path("items");
+    }
+
     private UUID complete(boolean rollback) {
         return new TransactionTemplate(transactionManager).execute(tx -> {
             Task task = tasks.findById(taskId).orElseThrow();
@@ -357,6 +535,7 @@ class TaskNotificationIntegrationTest extends AbstractIntegrationTest {
 
     private Agent createAgent(Long teamId, String name) {
         User user = users.save(User.create(name + "@outbox.test", "Outbox", null, "hash"));
+        members.save(TeamMember.create(teamId, user.getId(), MemberRole.MEMBER));
         return agents.save(Agent.create(teamId, user.getId(), name, null, ToolType.CODEX, "server"));
     }
 

@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-/** TASK_STATUS_CHANGED·TASK_COMPLETED Outbox를 요청자의 WebSocket으로 발행한다. */
+/** 상태·완료 알림은 요청자에게, 질문·답변 알림은 저장된 상대 Agent에게 발행 */
 @Component
 public class OutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);

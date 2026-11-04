@@ -19,11 +19,15 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-          cache: gradle
+
+      - uses: gradle/actions/setup-gradle@v4
+        with :
+            cache-read-only: ${{ github.event_name == 'pull_request' }}
+
       - name: Gradle build (통합 테스트 포함)
         run: |
           chmod +x gradlew
-          ./gradlew build --no-daemon
+          ./gradlew build --no-daemon --build-cache
 
       - name: Discord 빌드 실패 알림
         if: failure()

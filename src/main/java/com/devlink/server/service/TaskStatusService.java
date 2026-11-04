@@ -29,10 +29,9 @@ public class TaskStatusService {
 
     @Transactional
     public ChangeTaskStatusResponse changeStatus(Long taskId, Long agentId, ChangeTaskStatusRequest request) {
-        Task task = taskRepository.findById(taskId)
+        Task task = taskRepository.findByIdForUpdate(taskId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
 
-        // TODO: 호출부가 Bearer 토큰 인증 객체에서 추출한 agentId를 전달하도록 연동한다.
         if (!task.getReceiverAgentId().equals(agentId)) {
             throw new BusinessException(ErrorCode.ACCESS_DENIED);
         }

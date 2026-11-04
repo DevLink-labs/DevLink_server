@@ -2,6 +2,7 @@ package com.devlink.server.service;
 
 
 import java.util.List;
+import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.devlink.server.common.BusinessException;
@@ -29,6 +30,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class TaskCreationService {
     private static final Logger log = LoggerFactory.getLogger(TaskCreationService.class);
+    private static final int MAX_SUMMARY_CODE_POINTS = 1000;
     private static final List<TaskEventType> DELIVERY_EVENT_TYPES = List.of(
             TaskEventType.ACK_PENDING, TaskEventType.ACK_RECEIVED,
             TaskEventType.DELIVERY_UNKNOWN, TaskEventType.DELIVERY_NOT_SENT);
@@ -51,17 +53,19 @@ public class TaskCreationService {
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CreateTaskResponse create(Long teamId, Long agentId, CreateTaskRequest request) {
+        // 형식 오류는 DB 작업 전에 거른다. 정규화한 값을 저장·재시도 비교에 모두 쓴다.
+        String taskSummary = normalizeSummary(request.taskSummary());
         Creation creation;
         try {
             // 트랜잭션 시작 → Task(PENDING) + TaskEvent(CREATED) 저장 → 커밋
-            creation = transaction.execute(tx -> createTask(teamId, agentId, request));
+            creation = transaction.execute(tx -> createTask(teamId, agentId, request, taskSummary));
         } catch (DataIntegrityViolationException exception) {
             // 요청 키 유니크 제약 위반만 복구한다. 다른 제약 오류는 중복 요청으로 보지 않는다.
             if (!isRequestKeyConflict(exception)) {
                 throw exception;
             }
             // 패배한 생성 트랜잭션은 완전히 롤백됐다. 새 트랜잭션에서 승자의 작업을 조회·비교한다.
-            creation = transaction.execute(tx -> recoverReplay(teamId, agentId, request, exception));
+            creation = transaction.execute(tx -> recoverReplay(teamId, agentId, request, taskSummary, exception));
         }
 
         Task task = creation.task();
@@ -145,7 +149,7 @@ public class TaskCreationService {
         }
     }
 
-    private Creation createTask(Long teamId, Long agentId, CreateTaskRequest request) {
+    private Creation createTask(Long teamId, Long agentId, CreateTaskRequest request, String taskSummary) {
         var requester = agentRepository.findById(agentId)
                 .filter(agent -> agent.getTeamId().equals(teamId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
@@ -155,7 +159,7 @@ public class TaskCreationService {
         // 2. 기존 작업이 있으면 요청 내용 비교 (요청 Agent는 조회 조건이므로 비교 불필요)
         if (existing.isPresent()) {
             // 2-1. 기존 작업이 있는데 내용이 다른 경우 요청키를 잘못 재사용한것
-            requireSamePayload(existing.get(), teamId, request);
+            requireSamePayload(existing.get(), teamId, request, taskSummary);
             return new Creation(existing.get(), true);
         }
 
@@ -163,7 +167,7 @@ public class TaskCreationService {
         requireReceiver(teamId, request.receiverAgentId());
         // 3-1. Task(새 작업) 저장
         Task task = taskRepository.save(Task.create(request.requestKey(), teamId,
-                agentId, userId, request.receiverAgentId(), request.prompt()));
+                agentId, userId, request.receiverAgentId(), request.prompt(), taskSummary));
         // 3-2. TaskEvent(생성 이력) 저장
         taskEventRepository.save(TaskEvent.of(task.getId(), TaskEventType.CREATED, null));
         return new Creation(task, false);
@@ -174,21 +178,38 @@ public class TaskCreationService {
      * PostgreSQL은 승자가 커밋해야 제약 위반을 돌려주므로 재조회는 승자를 찾는다.
      * 그 사이 행이 사라진 경우는 분류할 수 없으므로 원래 예외를 그대로 던진다.
      */
-    private Creation recoverReplay(Long teamId, Long agentId, CreateTaskRequest request,
+    private Creation recoverReplay(Long teamId, Long agentId, CreateTaskRequest request, String taskSummary,
             DataIntegrityViolationException original) {
         Task task = taskRepository.findByRequesterAgentIdAndRequestKey(agentId, request.requestKey())
                 .orElseThrow(() -> original);
-        requireSamePayload(task, teamId, request);
+        requireSamePayload(task, teamId, request, taskSummary);
         return new Creation(task, true);
     }
 
-    /** 정상 경로의 재조회와 경합 복구가 같은 비교 규칙을 쓴다. 요청 Agent는 조회 조건이므로 비교하지 않는다. */
-    private void requireSamePayload(Task task, Long teamId, CreateTaskRequest request) {
+    /**
+     * 정상 경로의 재조회와 경합 복구가 같은 비교 규칙을 쓴다. 요청 Agent는 조회 조건이므로 비교하지 않는다.
+     * 요약은 정규화한 값끼리 비교하므로 앞뒤 공백만 다른 재시도는 같은 요청이다.
+     */
+    private void requireSamePayload(Task task, Long teamId, CreateTaskRequest request, String taskSummary) {
         if (!task.getTeamId().equals(teamId)
                 || !task.getReceiverAgentId().equals(request.receiverAgentId())
-                || !task.getPrompt().equals(request.prompt())) {
+                || !task.getPrompt().equals(request.prompt())
+                || !Objects.equals(task.getTaskSummary(), taskSummary)) {
             throw new BusinessException(ErrorCode.REQUEST_KEY_CONFLICT);
         }
+    }
+
+    /** 누락은 null로 두고, 값이 있으면 앞뒤 공백을 제거한 뒤 1~1,000 코드포인트만 허용한다. */
+    private static String normalizeSummary(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String summary = raw.strip();
+        int codePoints = summary.codePointCount(0, summary.length());
+        if (codePoints < 1 || codePoints > MAX_SUMMARY_CODE_POINTS) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+        }
+        return summary;
     }
 
     // DataIntegrityViolationException 중 요청 키 경합인지 확인

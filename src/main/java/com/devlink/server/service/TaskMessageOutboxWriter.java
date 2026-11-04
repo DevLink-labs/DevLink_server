@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+/** 질문·답변과 같은 트랜잭션에서 상대 Agent에게 보낼 동기화 신호를 저장한다. */
 @Component
 @RequiredArgsConstructor
 public class TaskMessageOutboxWriter {
@@ -23,6 +24,8 @@ public class TaskMessageOutboxWriter {
             default -> throw new IllegalArgumentException("Expected QUESTION or ANSWER");
         };
         UUID outboxId = UUID.randomUUID();
+        // event_id는 알림 재시도 식별자이고, payload.task_event_id가 원본 TaskEvent.id다.
+        // 본문은 넣지 않는다. 브로커는 이 신호를 받으면 task-messages를 즉시 조회한다.
         var envelope = objectMapper.createObjectNode()
                 .put("event_id", outboxId.toString())
                 .put("type", type)

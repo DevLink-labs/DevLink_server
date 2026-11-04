@@ -13,6 +13,7 @@ public enum ErrorCode {
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "리소스를 찾을 수 없습니다."),
     DUPLICATE_REQUEST(HttpStatus.CONFLICT, "중복 요청입니다."),
     EMAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 가입된 이메일입니다."),
+    AGENT_ALREADY_EXISTS(HttpStatus.CONFLICT, "팀에 같은 이름과 도구 유형의 Agent가 이미 있습니다."),
     AGENT_HAS_TASKS(HttpStatus.CONFLICT, "작업 이력이 있는 Agent는 삭제할 수 없습니다."),
     REQUEST_KEY_CONFLICT(HttpStatus.CONFLICT, "동일 요청 키에 다른 작업 요청이 존재합니다."),
     TASK_VERSION_CONFLICT(HttpStatus.CONFLICT, "작업이 변경되었습니다. 최신 작업 정보를 조회한 후 다시 요청해주세요."),

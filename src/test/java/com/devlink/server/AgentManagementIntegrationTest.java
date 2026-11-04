@@ -64,6 +64,71 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void teamRejectsDuplicateAgentRegistrationAcrossOwners() throws Exception {
+        try (var owner = new Browser(); var teammate = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            long teammateId = teammate.signupAndLogin();
+            members.saveAndFlush(TeamMember.create(teamId, teammateId, MemberRole.MEMBER));
+            String path = "/api/v1/agents/teams/" + teamId;
+
+            assertSuccess(owner.mutate("POST", path, agentBody()), 201);
+            assertError(teammate.mutate("POST", path, agentBody()), 409, "AGENT_ALREADY_EXISTS");
+            assertThat(agents.findByTeamId(teamId)).hasSize(1);
+        }
+    }
+
+    @Test
+    void ownedByMeReturnsOnlyTheAuthenticatedUsersAgents() throws Exception {
+        try (var owner = new Browser(); var teammate = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            owner.createAgent(teamId);
+            long teammateId = teammate.signupAndLogin();
+            members.saveAndFlush(TeamMember.create(teamId, teammateId, MemberRole.MEMBER));
+            long teammateAgentId = teammate.createAgent(teamId);
+            String path = "/api/v1/agents/teams/" + teamId;
+
+            var unfiltered = teammate.get(path);
+            assertSuccess(unfiltered, 200);
+            assertThat(unfiltered.body().path("data").size()).isEqualTo(2);
+
+            var filtered = teammate.get(path + "?ownedByMe=true");
+            assertSuccess(filtered, 200);
+            JsonNode profiles = filtered.body().path("data");
+            assertThat(profiles.size()).isEqualTo(1);
+            assertThat(profiles.get(0).path("agentId").asLong()).isEqualTo(teammateAgentId);
+        }
+    }
+
+    @Test
+    void onlyOwnerCanUpdateAgentProfileAndDuplicateNameIsRejected() throws Exception {
+        try (var owner = new Browser(); var teammate = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            long agentId = owner.createAgent(teamId);
+            long otherAgentId = owner.createAgent(teamId);
+            long teammateId = teammate.signupAndLogin();
+            members.saveAndFlush(TeamMember.create(teamId, teammateId, MemberRole.MEMBER));
+            String path = "/api/v1/agents/" + agentId;
+            String otherName = agents.findById(otherAgentId).orElseThrow().getName();
+
+            assertError(teammate.mutate("PATCH", path, Map.of("name", "Reviewer")),
+                    403, "ACCESS_DENIED");
+            var updated = owner.mutate("PATCH", path,
+                    Map.of("name", "Reviewer", "roleDescription", "", "projectName", "Server"));
+            assertSuccess(updated, 200);
+            assertError(owner.mutate("PATCH", path, Map.of("name", otherName)),
+                    409, "AGENT_ALREADY_EXISTS");
+
+            var stored = agents.findById(agentId).orElseThrow();
+            assertThat(stored.getName()).isEqualTo("Reviewer");
+            assertThat(stored.getRoleDescription()).isNull();
+            assertThat(stored.getProjectName()).isEqualTo("Server");
+        }
+    }
+
+    @Test
     void teamMemberCanReadProfilesButOutsiderCannotReadOrRegister() throws Exception {
         try (var owner = new Browser(); var teammate = new Browser(); var outsider = new Browser()) {
             owner.signupAndLogin();
@@ -249,7 +314,8 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
         }
 
         private long createAgent(long teamId) throws Exception {
-            var response = mutate("POST", "/api/v1/agents/teams/" + teamId, agentBody());
+            var response = mutate("POST", "/api/v1/agents/teams/" + teamId,
+                    registrationField("name", "Agent " + UUID.randomUUID()));
             assertSuccess(response, 201);
             return response.body().path("data").path("agentId").asLong();
         }
