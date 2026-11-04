@@ -83,6 +83,281 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
     private Map<String, Long> taskIds;
     private int taskSequence;
 
+    @Test
+    void webHistoryFiltersBeforePaginationAndKeepsCursorStableAfterNewEvents() throws Exception {
+        Long taskId = taskIds.get("sentInProgress");
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            createEvent(taskId, TaskEventType.ACK_PENDING, null, BASE_TIME);
+            createEvent(taskId, TaskEventType.CREATED, null, BASE_TIME.plusSeconds(9));
+            createEvent(taskId, TaskEventType.ACK_RECEIVED, null, BASE_TIME);
+            createEvent(taskId, TaskEventType.STATUS_CHANGED, "작업 수락", BASE_TIME.plusSeconds(7));
+            createEvent(taskId, TaskEventType.DELIVERY_UNKNOWN, null, BASE_TIME);
+            createEvent(taskId, TaskEventType.PROGRESS, "진행 기록", BASE_TIME.plusSeconds(5));
+            createEvent(taskId, TaskEventType.DELIVERY_NOT_SENT, null, BASE_TIME);
+            TaskEvent question = createConversationEvent(taskId, TaskEventType.QUESTION,
+                    teammateAgent.id(), null, BASE_TIME.plusSeconds(3));
+            createEvent(taskId, TaskEventType.NOTIFY_FAILED, null, BASE_TIME);
+            createConversationEvent(taskId, TaskEventType.ANSWER, callerAgent.id(), question.getId(), BASE_TIME);
+            createEvent(taskId, TaskEventType.ACK_RECEIVED, null, BASE_TIME);
+            createEvent(taskIds.get("receivedCompleted"), TaskEventType.PROGRESS, "다른 작업", BASE_TIME);
+            createEvent(taskIds.get("otherTeamPending"), TaskEventType.PROGRESS, "다른 팀", BASE_TIME);
+        });
+        try (HttpClient client = loggedInClient(owner)) {
+            JsonNode first = assertSuccess(webHistoryGet(client, team.getId(), taskId, "?limit=2"));
+            assertWebHistoryPage(first, taskId, "8", true, "8", "10");
+            new TransactionTemplate(transactionManager).executeWithoutResult(tx ->
+                    createEvent(taskId, TaskEventType.PROGRESS, "새 기록", BASE_TIME.plusMinutes(1)));
+            List<Map<String, Object>> before = jdbc.queryForList(
+                    "select * from task_events where task_id = ? order by sequence", taskId);
+
+            JsonNode second = assertSuccess(webHistoryGet(client, team.getId(), taskId,
+                    "?limit=2&beforeSequence=" + first.path("nextBeforeSequence").asText()));
+            assertWebHistoryPage(second, taskId, "4", true, "4", "6");
+            JsonNode last = assertSuccess(webHistoryGet(client, team.getId(), taskId,
+                    "?limit=2&beforeSequence=" + second.path("nextBeforeSequence").asText()));
+            assertWebHistoryPage(last, taskId, null, false, "2");
+            assertThat(last.path("items").get(0).path("message").isNull()).isTrue();
+            assertThat(last.path("items").get(0).path("authorAgent").isNull()).isTrue();
+            assertWebHistoryPage(assertSuccess(webHistoryGet(client, team.getId(), taskId,
+                    "?limit=2&beforeSequence=2")), taskId, null, false);
+            assertWebHistoryPage(assertSuccess(webHistoryGet(client, team.getId(), taskId,
+                    "?limit=2&beforeSequence=1")), taskId, null, false);
+            // 이벤트가 세 개보다 많이 남아 있어도 표시 대상이 두 개면 다음 페이지는 없다.
+            assertWebHistoryPage(assertSuccess(webHistoryGet(client, team.getId(), taskId,
+                    "?limit=2&beforeSequence=6")), taskId, null, false, "2", "4");
+            assertThat(jdbc.queryForList("select * from task_events where task_id = ? order by sequence", taskId))
+                    .isEqualTo(before);
+            JsonNode common = assertSuccess(get(eventsPath(taskId) + "?limit=100", callerAgent.token()));
+            assertThat(common.path("items").size()).isEqualTo(12);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"sentPending", "sentInProgress", "sentCompleted", "sentFailed", "sentRejected"})
+    void webHistoryReturnsCurrentResultAndFilesWithoutEventsForEveryStatus(String label) throws Exception {
+        Long taskId = taskIds.get(label);
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            for (ChangeType type : ChangeType.values()) {
+                taskFiles.saveAndFlush(TaskFile.of(taskId, "src/" + type + ".java", type,
+                        type == ChangeType.DELETED ? null : "- old\n+ new"));
+            }
+            taskFiles.saveAndFlush(TaskFile.of(taskIds.get("otherTeamPending"), "other.txt", ChangeType.ADDED, null));
+        });
+        Map<String, Object> taskBefore = jdbc.queryForMap("select * from tasks where id = ?", taskId);
+        List<Map<String, Object>> filesBefore = jdbc.queryForList("select * from task_files where task_id = ?", taskId);
+        try (HttpClient client = loggedInClient(teammate)) {
+            JsonNode data = assertSuccess(webHistoryGet(client, team.getId(), taskId, ""));
+            assertWebHistoryPage(data, taskId, null, false);
+            assertThat(data.path("prompt").asText()).isEqualTo("목록 조회 테스트: " + label);
+            JsonNode common = assertSuccess(get(detailPath(taskId), callerAgent.token()));
+            for (String field : List.of("prompt", "resultText", "failureReason", "rejectionReason",
+                    "partiallyModified", "taskFiles")) {
+                assertThat(data.get(field)).as(field).isEqualTo(common.get(field));
+            }
+            assertThat(data.path("taskFiles").size()).isEqualTo(ChangeType.values().length);
+            assertThat(assertSuccess(webHistoryGet(client, team.getId(), taskId, "?beforeSequence=1"))).isEqualTo(data);
+            assertThat(jdbc.queryForMap("select * from tasks where id = ?", taskId)).isEqualTo(taskBefore);
+            assertThat(jdbc.queryForList("select * from task_files where task_id = ?", taskId)).isEqualTo(filesBefore);
+            assertThat(taskEvents.findByTaskIdOrderBySequenceAsc(taskId)).isEmpty();
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {"default|50", "1|1", "100|100"})
+    void webHistoryAppliesDefaultAndLimitBoundariesToVisibleEvents(String limit, int expectedSize) throws Exception {
+        Long taskId = taskIds.get("sentCompleted");
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            for (int i = 1; i <= 101; i++) {
+                createEvent(taskId, TaskEventType.PROGRESS, "진행 " + i, BASE_TIME);
+            }
+            createEvent(taskId, TaskEventType.ACK_RECEIVED, null, BASE_TIME);
+        });
+        try (HttpClient client = loggedInClient(owner)) {
+            String query = "default".equals(limit) ? "" : "?limit=" + limit;
+            JsonNode data = assertSuccess(webHistoryGet(client, team.getId(), taskId, query));
+            assertThat(data.path("items").size()).isEqualTo(expectedSize);
+            assertNullableText(data.path("nextBeforeSequence"), Integer.toString(102 - expectedSize));
+            assertThat(data.path("hasNext").asBoolean()).isTrue();
+            for (int i = 0; i < expectedSize; i++) {
+                JsonNode item = data.path("items").get(i);
+                int sequence = 102 - expectedSize + i;
+                assertDetailEvent(item, TaskEventType.PROGRESS, "진행 " + sequence, BASE_TIME);
+                assertThat(item.path("sequence").asText()).isEqualTo(Integer.toString(sequence));
+            }
+        }
+    }
+
+    @Test
+    void webHistoryPreservesAuthorsQuestionReferencesAndRawContentAcrossPages() throws Exception {
+        User viewer = new TransactionTemplate(transactionManager).execute(tx -> {
+            User user = createUser("이력 조회 전용 팀원", passwordEncoder.encode(TEST_PASSWORD));
+            members.save(TeamMember.create(team.getId(), user.getId(), MemberRole.MEMBER));
+            return user;
+        });
+        Long taskId = taskIds.get("sentCompleted");
+        String body = "첫 줄\n```java\n  return true;\n```\n<script>alert('text')</script> 😀";
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            TaskEvent question = createConversationEvent(taskId, TaskEventType.QUESTION, teammateAgent.id(), null, BASE_TIME);
+            TaskEvent answer = createConversationEvent(taskId, TaskEventType.ANSWER, callerAgent.id(), question.getId(), BASE_TIME);
+            createConversationEvent(taskId, TaskEventType.ANSWER, teammateAgent.id(), question.getId(), BASE_TIME);
+            jdbc.update("update task_events set content = ? where id = ?", body, answer.getId());
+            jdbc.update("update tasks set prompt = ? where id = ?", body, taskId);
+        });
+        try (HttpClient client = loggedInClient(viewer)) {
+            JsonNode first = assertSuccess(webHistoryGet(client, team.getId(), taskId, "?limit=2"));
+            assertWebHistoryPage(first, taskId, "2", true, "2", "3");
+            JsonNode detail = assertSuccess(get(detailPath(taskId), callerAgent.token()));
+            assertThat(first.path("items").get(0)).isEqualTo(detail.path("events").get(1));
+            assertThat(first.path("items").get(1)).isEqualTo(detail.path("events").get(2));
+            assertDetailAgent(first.path("items").get(0).path("authorAgent"), callerAgent);
+            assertDetailAgent(first.path("items").get(1).path("authorAgent"), teammateAgent);
+            assertThat(first.path("items").get(0).path("message").asText()).isEqualTo(body);
+            assertThat(first.path("prompt").asText()).isEqualTo(body);
+            JsonNode last = assertSuccess(webHistoryGet(client, team.getId(), taskId, "?beforeSequence=2&limit=2"));
+            assertWebHistoryPage(last, taskId, null, false, "1");
+            for (JsonNode item : first.path("items")) {
+                assertNullableText(item.path("questionEventId"), last.path("items").get(0).path("eventId").asText());
+            }
+            for (String field : List.of("prompt", "resultText", "failureReason", "rejectionReason", "partiallyModified", "taskFiles")) {
+                assertThat(last.get(field)).isEqualTo(first.get(field));
+            }
+            assertThat(assertSuccess(webHistoryGet(client, team.getId(), taskId, "?limit=2"))).isEqualTo(first);
+            assertCurrentUser(client, viewer.getId());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void webHistoryReturnsEmptyPageWhenNoVisibleEventsExist(boolean internalOnly) throws Exception {
+        Long taskId = taskIds.get("sentPending");
+        if (internalOnly) {
+            new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+                for (TaskEventType type : List.of(TaskEventType.ACK_PENDING, TaskEventType.ACK_RECEIVED,
+                        TaskEventType.DELIVERY_UNKNOWN, TaskEventType.DELIVERY_NOT_SENT, TaskEventType.NOTIFY_FAILED)) {
+                    createEvent(taskId, type, null, BASE_TIME);
+                }
+            });
+        }
+        try (HttpClient client = loggedInClient(owner)) {
+            JsonNode data = assertSuccess(webHistoryGet(client, team.getId(), taskId, ""));
+            assertWebHistoryPage(data, taskId, null, false);
+            assertThat(data.path("prompt").asText()).isEqualTo("목록 조회 테스트: sentPending");
+            assertEmptyArray(data.path("taskFiles"));
+        }
+    }
+
+    @Test
+    void webHistoryAcceptsMissingSequenceBoundaryWithoutRenumbering() throws Exception {
+        Long taskId = taskIds.get("sentInProgress");
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            for (int i = 0; i < 3; i++) createEvent(taskId, TaskEventType.PROGRESS, "진행 기록", BASE_TIME);
+            jdbc.update("delete from task_events where task_id = ? and sequence = 2", taskId);
+        });
+        try (HttpClient client = loggedInClient(owner)) {
+            assertWebHistoryPage(assertSuccess(webHistoryGet(client, team.getId(), taskId,
+                    "?beforeSequence=2")), taskId, null, false, "1");
+            assertWebHistoryPage(assertSuccess(webHistoryGet(client, team.getId(), taskId,
+                    "?beforeSequence=9223372036854775807")), taskId, null, false, "1", "3");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"beforeSequence=0", "beforeSequence=-1", "beforeSequence=01",
+            "beforeSequence=abc", "beforeSequence=1.5", "beforeSequence=",
+            "beforeSequence=9223372036854775808", "beforeSequence=99999999999999999999",
+            "limit=0", "limit=-1", "limit=101", "limit=abc", "limit=1.5", "limit=2147483648"})
+    void webHistoryRejectsInvalidQueryParameters(String query) throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            assertError(webHistoryGet(client, team.getId(), taskIds.get("sentCompleted"), "?" + query),
+                    400, "VALIDATION_FAILED");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "-1", "abc", "9223372036854775808"})
+    void webHistoryRejectsInvalidPathIds(String invalidId) throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            for (String path : List.of("/api/v1/web/teams/" + invalidId + "/tasks/" + taskIds.get("sentCompleted") + "/events",
+                    webListPath(team.getId()) + "/" + invalidId + "/events")) {
+                assertError(client.send(request(path).GET().build(), HttpResponse.BodyHandlers.ofString()),
+                        400, "VALIDATION_FAILED");
+            }
+        }
+    }
+
+    @Test
+    void webHistoryRequiresUserSessionInsteadOfAgentToken() throws Exception {
+        String path = webHistoryPath(team.getId(), taskIds.get("sentCompleted"));
+        assertError(get(path, null), 401, "AUTHENTICATION_REQUIRED");
+        assertError(get(path, callerAgent.token()), 401, "AUTHENTICATION_REQUIRED");
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            assertError(client.send(request(path).header("Cookie", "JSESSIONID=invalid-session").GET().build(),
+                    HttpResponse.BodyHandlers.ofString()), 401, "AUTHENTICATION_REQUIRED");
+        }
+    }
+
+    @Test
+    void webHistoryChecksMembershipAndTaskTeamEvenWithoutEvents() throws Exception {
+        try (HttpClient client = loggedInClient(outsider)) {
+            assertError(client.send(request(webHistoryPath(team.getId(), taskIds.get("sentCompleted")))
+                    .header("Authorization", "Bearer " + callerAgent.token()).GET().build(),
+                    HttpResponse.BodyHandlers.ofString()), 403, "ACCESS_DENIED");
+            assertCurrentUser(client, outsider.getId());
+        }
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx ->
+                members.save(TeamMember.create(otherTeam.getId(), owner.getId(), MemberRole.MEMBER)));
+        try (HttpClient client = loggedInClient(owner)) {
+            assertError(webHistoryGet(client, team.getId(), taskIds.get("otherTeamPending"), ""), 403, "ACCESS_DENIED");
+            assertError(webHistoryGet(client, otherTeam.getId(), taskIds.get("sentCompleted"), ""), 403, "ACCESS_DENIED");
+            assertWebHistoryPage(assertSuccess(webHistoryGet(client, otherTeam.getId(), taskIds.get("otherTeamPending"), "")),
+                    taskIds.get("otherTeamPending"), null, false);
+        }
+    }
+
+    @Test
+    void webHistoryReturnsNotFoundForMissingTeamOrTask() throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            assertError(webHistoryGet(client, Long.MAX_VALUE, taskIds.get("sentCompleted"), ""), 404, "RESOURCE_NOT_FOUND");
+            assertError(webHistoryGet(client, team.getId(), Long.MAX_VALUE, ""), 404, "RESOURCE_NOT_FOUND");
+        }
+    }
+
+    @Test
+    void webHistoryRechecksMembershipAfterTeamDeparture() throws Exception {
+        try (HttpClient client = loggedInClient(owner)) {
+            assertSuccess(webHistoryGet(client, team.getId(), taskIds.get("sentCompleted"), ""));
+            jdbc.update("delete from team_members where team_id = ? and user_id = ?", team.getId(), owner.getId());
+            assertError(webHistoryGet(client, team.getId(), taskIds.get("sentCompleted"), ""), 403, "ACCESS_DENIED");
+        }
+    }
+
+    private String webHistoryPath(Long teamId, Long taskId) {
+        return webDetailPath(teamId, taskId) + "/events";
+    }
+
+    private HttpResponse<String> webHistoryGet(HttpClient client, Long teamId, Long taskId, String query) throws Exception {
+        return client.send(request(webHistoryPath(teamId, taskId) + query).GET().build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private void assertWebHistoryPage(JsonNode data, Long taskId, String cursor, boolean hasNext, String... sequences) {
+        List<String> fields = new ArrayList<>();
+        data.fieldNames().forEachRemaining(fields::add);
+        assertThat(fields).containsExactlyInAnyOrder("taskId", "prompt", "resultText", "failureReason",
+                "rejectionReason", "partiallyModified", "taskFiles", "items", "nextBeforeSequence", "hasNext");
+        assertThat(data.path("taskId").asLong()).isEqualTo(taskId);
+        assertThat(data.path("items").isArray()).isTrue();
+        List<String> actual = new ArrayList<>();
+        data.path("items").forEach(item -> {
+            assertThat(item.path("eventId").isTextual()).isTrue();
+            assertThat(item.path("sequence").isTextual()).isTrue();
+            actual.add(item.path("sequence").asText());
+        });
+        assertThat(actual).containsExactly(sequences);
+        assertNullableText(data.path("nextBeforeSequence"), cursor);
+        assertThat(data.path("hasNext").isBoolean()).isTrue();
+        assertThat(data.path("hasNext").asBoolean()).isEqualTo(hasNext);
+    }
+
     @ParameterizedTest
     @CsvSource({"sentPending,PENDING,0,false,false", "sentInProgress,IN_PROGRESS,1,true,false",
             "sentCompleted,COMPLETED,2,true,true", "sentFailed,FAILED,3,true,true",

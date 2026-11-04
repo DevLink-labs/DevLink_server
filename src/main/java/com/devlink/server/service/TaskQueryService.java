@@ -38,7 +38,7 @@ import com.devlink.server.dto.task.TaskEventResponse;
 import com.devlink.server.domain.task.TaskStatus;
 import com.devlink.server.dto.task.TaskDetailResponse;
 import com.devlink.server.dto.task.TaskEventListRequest;
-
+import com.devlink.server.dto.task.WebTaskHistoryResponse;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -55,6 +55,78 @@ public class TaskQueryService {
 	private final TaskFileRepository taskFileRepository;
 	private final TaskEventRepository taskEventRepository;
 	private final TeamAuthorizationService teamAuthorizationService;
+	
+	@Transactional(readOnly = true)
+	public WebTaskHistoryResponse getWebTaskHistory(
+			Long teamId,
+			Long taskId,
+			UserPrincipal user,
+			TaskEventListRequest request) {
+		if(user == null) {
+			throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
+		}
+		teamAuthorizationService.requireTeamMember(user.userId(), teamId);
+		
+		Task task = findTask(taskId);
+		
+		if(!task.getTeamId().equals(teamId)) {
+			throw new BusinessException(ErrorCode.ACCESS_DENIED);
+		}
+		
+		List<TaskEventType> eventTypes = List.of(
+				TaskEventType.CREATED,
+				TaskEventType.STATUS_CHANGED,
+				TaskEventType.PROGRESS,
+				TaskEventType.QUESTION,
+				TaskEventType.ANSWER);
+		
+		int limit = request.limit();
+		Pageable pageable = PageRequest.of(0, limit+1);
+		
+		List<TaskEvent> fetched;
+		
+		if(request.beforeSequence() == null) {
+			fetched = taskEventRepository.findLatestEventsByTypes(taskId, eventTypes, pageable);
+		}else {
+			Long beforeSequence;
+			try {
+				beforeSequence = Long.valueOf(request.beforeSequence());
+			}catch(NumberFormatException e) {
+				throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+			}
+			fetched = taskEventRepository.findEventsBeforeByTypes(taskId, eventTypes, beforeSequence, pageable);
+		}
+		boolean hasNext = fetched.size()>limit;
+		
+		List<TaskEvent> selected = new ArrayList<>(
+				fetched.subList(0, Math.min(limit, fetched.size())));
+		
+		Collections.reverse(selected);
+		
+		String nextBeforeSequence = hasNext ? selected.getFirst().getSequence().toString():null;
+		
+		TaskStatus status = task.getStatus();
+		
+		String resultText = status == TaskStatus.COMPLETED?task.getResultText():null;
+		
+		String failureReason = status == TaskStatus.FAILED?task.getResultText():null;
+		
+		String rejectionReason = status == TaskStatus.REJECTED?task.getResultText():null;
+		
+		boolean partiallyModified = status == TaskStatus.FAILED && task.isPartiallyModified();
+
+		return new WebTaskHistoryResponse(
+				task.getId(),
+				task.getPrompt(),
+				resultText,
+				failureReason,
+				rejectionReason,
+				partiallyModified,
+				findTaskFiles(taskId),
+				toEventResponses(selected),
+				nextBeforeSequence,
+				hasNext);
+	}
 	
 	@Transactional(readOnly = true)
 	public WebTaskDetailResponse getWebTask(
