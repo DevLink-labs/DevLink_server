@@ -19,6 +19,8 @@ import com.devlink.server.repository.TeamMemberRepository;
 import com.devlink.server.repository.TeamRepository;
 import com.devlink.server.repository.UserRepository;
 import org.hibernate.exception.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -29,6 +31,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class TeamService {
+    private static final Logger log = LoggerFactory.getLogger(TeamService.class);
     private static final int MAX_INVITE_ATTEMPTS = 5;
     private final TeamRepository teams;
     private final TeamMemberRepository members;
@@ -101,8 +104,12 @@ public class TeamService {
                     throw exception;
                 }
                 if (attempt == MAX_INVITE_ATTEMPTS) {
+                    log.error("Invite regeneration failed after repeated code conflicts: userId={}, teamId={}, attempts={}",
+                            userId, teamId, attempt);
                     throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
                 }
+                log.debug("Retrying invite regeneration after code conflict: userId={}, teamId={}, attempt={}/{}",
+                        userId, teamId, attempt, MAX_INVITE_ATTEMPTS);
             }
         }
         throw new IllegalStateException("Invite code generation attempts exhausted");
@@ -119,35 +126,46 @@ public class TeamService {
             return transaction.execute(status -> joinTeam(userId, request.inviteCode()));
         } catch (MembershipConflict exception) {
             // 가입 중복 충돌은 롤백 완료 후 새 트랜잭션에서 기존 가입 정보로 복구
+            log.debug("Recovering team membership after concurrent join: userId={}, teamId={}",
+                    userId, exception.teamId);
             return transaction.execute(status -> recoverMembership(userId, exception));
         }
     }
 
     private TeamInviteResponse regenerateInviteCode(Long userId, Long teamId) {
         Team team = teams.findByIdForUpdate(teamId)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+                .orElseThrow(() -> {
+                    log.debug("Invite regeneration rejected: team not found, userId={}, teamId={}", userId, teamId);
+                    return new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+                });
         authorization.requireTeamOwner(userId, teamId);
-        String code = generateReplacementCode(team.getInviteCode());
+        String code = generateReplacementCode(team.getInviteCode(), teamId);
         team.regenerateInviteCode(code);
         return TeamInviteResponse.from(teams.saveAndFlush(team));
     }
 
-    private String generateReplacementCode(String currentCode) {
+    private String generateReplacementCode(String currentCode, Long teamId) {
         for (int attempt = 0; attempt < MAX_INVITE_ATTEMPTS; attempt++) {
             String code = inviteCodes.generate();
             if (!code.equals(currentCode)) {
                 return code;
             }
         }
+        log.error("Invite regeneration failed: generated only the current code, teamId={}, attempts={}",
+                teamId, MAX_INVITE_ATTEMPTS);
         throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
     }
 
     private TeamJoinResponse joinTeam(Long userId, String inviteCode) {
         requireUser(userId);
         Team team = teams.findByInviteCodeForUpdate(inviteCode)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+                .orElseThrow(() -> {
+                    log.debug("Team join rejected: invite code not found, userId={}", userId);
+                    return new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+                });
         var existing = members.findByTeamIdAndUserId(team.getId(), userId);
         if (existing.isPresent()) {
+            log.debug("Team join reused existing membership: userId={}, teamId={}", userId, team.getId());
             return TeamJoinResponse.from(team, existing.get(), true);
         }
         try {
