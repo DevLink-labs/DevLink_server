@@ -59,6 +59,7 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
         request = new CreateTaskRequest(key, agentId, "Implement feature");
         when(routing.sendTask(anyLong())).thenAnswer(invocation ->
                 new TaskRoutingResult(invocation.getArgument(0), TaskRoutingResult.Status.SENT, "event", "connection"));
+        when(routing.isAwaitingAck(any())).thenReturn(true);
     }
 
     @Test
@@ -94,26 +95,10 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
         verify(routing, times(1)).sendTask(created.taskId());
     }
 
-    @ParameterizedTest
-    @EnumSource(value = ErrorCode.class, names = {"RECEIVER_OFFLINE", "DELIVERY_SERVICE_UNAVAILABLE", "ACCESS_DENIED"})
-    void unavailableReceiverIsRejectedBeforeSavingTaskOrEvent(ErrorCode error) {
-        long eventsBefore = events.count();
-        doThrow(new BusinessException(error)).when(routing).requireReceiverAvailable(any());
-
-        assertThatThrownBy(() -> service.create(teamId, agentId, request))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        exception -> assertThat(exception.getErrorCode()).isEqualTo(error));
-
-        assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(teamId)).isEmpty();
-        assertThat(events.count()).isEqualTo(eventsBefore);
-        verify(routing, never()).sendTask(anyLong());
-    }
-
     @Test
     void replayAfterDisconnectReturnsSavedTaskWithoutCheckingOrSendingAgain() {
         var created = service.create(teamId, agentId, request);
         clearInvocations(routing);
-        doThrow(new BusinessException(ErrorCode.RECEIVER_OFFLINE)).when(routing).requireReceiverAvailable(any());
 
         var replay = service.create(teamId, agentId, request);
 
@@ -121,8 +106,7 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
         assertThat(replay.taskId()).isEqualTo(created.taskId());
         assertThat(replay.delivery()).isEqualTo(created.delivery());
         assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(teamId)).hasSize(1);
-        verify(routing, never()).requireReceiverAvailable(any());
-        verify(routing, never()).sendTask(anyLong());
+        verifyNoInteractions(routing);
     }
 
     @ParameterizedTest
@@ -205,6 +189,7 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void timeoutBeforeSocketReturnIsNotReplacedByAckPending() {
+        when(routing.isAwaitingAck(any())).thenReturn(false);
         when(routing.sendTask(anyLong())).thenAnswer(invocation -> {
             Long taskId = invocation.getArgument(0);
             new org.springframework.transaction.support.TransactionTemplate(transactionManager)
@@ -247,7 +232,6 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
         assertThatThrownBy(() -> service.create(teamId, agentId, request))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(tasks.findByRequesterAgentIdAndRequestKey(agentId, request.requestKey())).isEmpty();
-        verify(routing).requireReceiverAvailable(any());
         verify(routing, never()).sendTask(anyLong());
     }
 

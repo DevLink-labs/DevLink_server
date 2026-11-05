@@ -3,6 +3,7 @@ package com.devlink.server.service;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.devlink.server.common.BusinessException;
@@ -26,6 +27,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.socket.WebSocketSession;
 
 @Service
 public class TaskCreationService {
@@ -74,25 +76,36 @@ public class TaskCreationService {
             return CreateTaskResponse.of(task, true, delivery);
         }
 
-        return deliverTask(task);
+        return deliverTask(task, null);
     }
 
-    /** 생성 커밋 이후 전송과 이력 저장의 실패를 구분한다. ACK는 기다리지 않는다. */
-    private CreateTaskResponse deliverTask(Task task) {
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void retryUndelivered(long receiverAgentId, WebSocketSession session) {
+        for (Task task : taskRoutingService.findUndeliveredTasks(receiverAgentId)) {
+            deliverTask(task, session);
+        }
+    }
+
+    /** 작업 저장 커밋 이후 전송과 이력 저장의 실패를 구분한다. ACK는 기다리지 않는다. */
+    private CreateTaskResponse deliverTask(Task task, WebSocketSession expectedSession) {
         TaskRoutingResult routing;
+        long previousDeliveryId;
 
         // 1. 브로커 전송
         try {
-            routing = taskRoutingService.sendTask(task.getId());
+            previousDeliveryId = latestDeliveryEvent(task.getId()).map(TaskEvent::getId).orElse(0L);
+            routing = expectedSession == null
+                    ? taskRoutingService.sendTask(task.getId())
+                    : taskRoutingService.sendTask(task.getId(), expectedSession);
         } catch (RuntimeException exception) {
-            log.error("Task routing failed after creation: taskId={}", task.getId(), exception);
+            log.error("Task routing failed: taskId={}", task.getId(), exception);
             return CreateTaskResponse.of(task, false,
                     new TaskDeliveryResult(TaskEventType.DELIVERY_UNKNOWN, "ROUTING_ERROR"));
         }
 
         // 2. 전송 결과 routing을 받아서 Task, TaskEvent upsert
         try {
-            task = saveDeliveryEvent(task, routing);
+            task = saveDeliveryEvent(task, routing, previousDeliveryId);
         } catch (RuntimeException exception) {
             log.error("Failed to record delivery history: taskId={}", task.getId(), exception);
             return CreateTaskResponse.of(task, false,
@@ -102,12 +115,12 @@ public class TaskCreationService {
     }
 
     /** 전송 결과를 기록한다. deliveredAt은 유효한 ACK를 저장할 때만 변경한다. */
-    private Task saveDeliveryEvent(Task task, TaskRoutingResult routing) {
+    private Task saveDeliveryEvent(Task task, TaskRoutingResult routing, long previousDeliveryId) {
         return transaction.execute(tx -> {
             Task savedTask = taskRepository.findByIdForUpdate(task.getId())
                     .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
-            if (taskEventRepository.existsByTaskIdAndEventType(
-                    task.getId(), TaskEventType.ACK_RECEIVED)) {
+            if (savedTask.getDeliveredAt() != null || taskEventRepository
+                    .existsByTaskIdAndEventType(task.getId(), TaskEventType.ACK_RECEIVED)) {
                 return savedTask;
             }
             TaskEventType eventType = switch (routing.status()) {
@@ -119,12 +132,18 @@ public class TaskCreationService {
 
                 case TRANSPORT_ERROR
                     -> TaskEventType.DELIVERY_UNKNOWN;
+
+                case ALREADY_DELIVERED, ACK_IN_PROGRESS -> null;
             };
 
-            // ACK뿐 아니라 타임아웃·연결 종료가 먼저 기록된 경우도 보호한다.
-            if (eventType == TaskEventType.ACK_PENDING && taskEventRepository
-                    .findFirstByTaskIdAndEventTypeInOrderByIdDesc(task.getId(), DELIVERY_EVENT_TYPES)
-                    .isPresent()) {
+            if (eventType == null) {
+                return savedTask;
+            }
+            // ACK가 이미 처리된 시도나 다른 경로에서 더 최근 결과를 남긴 경우를 건너뛴다.
+            boolean resultSuperseded = routing.status() == Status.SENT
+                    ? !taskRoutingService.isAwaitingAck(routing)
+                    : latestDeliveryEvent(task.getId()).filter(event -> event.getId() > previousDeliveryId).isPresent();
+            if (resultSuperseded) {
                 return savedTask;
             }
             taskEventRepository.save(TaskEvent.of(task.getId(), eventType,
@@ -133,10 +152,13 @@ public class TaskCreationService {
         });
     }
 
+    private Optional<TaskEvent> latestDeliveryEvent(Long taskId) {
+        return taskEventRepository.findFirstByTaskIdAndEventTypeInOrderByIdDesc(taskId, DELIVERY_EVENT_TYPES);
+    }
+
     private TaskDeliveryResult findLatestDelivery(Long taskId) {
         try {
-            return transaction.execute(tx -> taskEventRepository
-                    .findFirstByTaskIdAndEventTypeInOrderByIdDesc(taskId, DELIVERY_EVENT_TYPES)
+            return transaction.execute(tx -> latestDeliveryEvent(taskId)
                     .map(event -> new TaskDeliveryResult(event.getEventType(),
                             switch (event.getEventType()) {
                                 case ACK_PENDING, ACK_RECEIVED -> null;
@@ -231,8 +253,6 @@ public class TaskCreationService {
         if (!agent.getTeamId().equals(teamId)) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
         }
-        // 재접수는 위에서 기존 작업을 반환한다. 새 작업에 대해서만 저장 전에 검사한다.
-        taskRoutingService.requireReceiverAvailable(agent);
     }
 
     private record Creation(Task task, boolean replayed) { }

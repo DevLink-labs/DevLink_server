@@ -9,6 +9,7 @@ import com.devlink.server.domain.agent.AgentStatus;
 import com.devlink.server.realtime.ConnectionRegistry;
 import com.devlink.server.repository.AgentRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
 import org.springframework.web.socket.WebSocketSession;
@@ -17,10 +18,13 @@ import org.springframework.web.socket.WebSocketSession;
 public class AgentPresenceService {
     private final AgentRepository agents;
     private final ConnectionRegistry connections;
+    private final ApplicationEventPublisher events;
 
-    public AgentPresenceService(AgentRepository agents, ConnectionRegistry connections) {
+    public AgentPresenceService(AgentRepository agents, ConnectionRegistry connections,
+            ApplicationEventPublisher events) {
         this.agents = agents;
         this.connections = connections;
+        this.events = events;
     }
 
     @Transactional
@@ -39,6 +43,8 @@ public class AgentPresenceService {
         }
         if (status == AgentStatus.ONLINE) {
             agent.markOnline(LocalDateTime.now());
+            // 커밋에 성공한 ONLINE 보고만 미전달 작업 조회를 시작한다.
+            events.publishEvent(new AgentOnline(principal.agentId(), session));
         } else {
             agent.markOffline();
         }
@@ -52,4 +58,6 @@ public class AgentPresenceService {
             }
         });
     }
+
+    record AgentOnline(long agentId, WebSocketSession session) { }
 }
