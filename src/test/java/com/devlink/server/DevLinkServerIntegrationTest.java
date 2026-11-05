@@ -36,7 +36,9 @@ class DevLinkServerIntegrationTest extends AbstractIntegrationTest {
         assertThat(entityManagerFactory.getMetamodel().getEntities())
                 .extracting(entity -> entity.getName())
                 .containsExactlyInAnyOrder("TaskFile", "TeamMember", "TaskEvent", "User",
-                        "Team", "OutboxEvent", "Agent", "Task");
+                        "Team", "OutboxEvent", "Agent", "Task", "UserGitSetting",
+                        "TeamGitRepository", "RepositoryCommit", "CommitFile", "WorkingFile",
+                        "FileDependency");
         assertThat(flyway.info().applied())
                 .extracting(migration -> migration.getVersion().getVersion())
                 .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
