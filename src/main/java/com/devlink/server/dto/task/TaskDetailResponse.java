@@ -7,6 +7,8 @@ import java.util.List;
 public record TaskDetailResponse(
         Long taskId,
         Long teamId,
+        String teamName,
+        String taskSummary,
         TaskAgentResponse requesterAgent,
         TaskAgentResponse receiverAgent,
         String prompt,
@@ -20,6 +22,7 @@ public record TaskDetailResponse(
         List<TaskEventResponse> events,
         LocalDateTime createdAt,
         LocalDateTime startedAt,
-        LocalDateTime completedAt
+        LocalDateTime completedAt,
+        LocalDateTime lastActivityAt
 ) {
 }

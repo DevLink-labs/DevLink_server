@@ -120,6 +120,8 @@ domain/
 
 **ERD 확정 사항**
 - `users`, `teams`, `team_members`, `agents`, `tasks`, `task_files`, `task_events`, `outbox_events` 8개 테이블을 적용
+- V10(3차 MVP): `agents.part`·`agents.roles`와 `user_git_settings`, `team_repositories`, `repository_commits`, `commit_files`, `working_files`, `file_dependencies` 6개 테이블을 추가합니다. 기존 Agent의 기본값은 `OTHER`·빈 태그 배열입니다.
+- `user_git_settings.git_email`에는 이번 ERD 기준으로 정규화한 Git 이메일 원문을 저장합니다. 이메일 정규화·브로커 대조값 생성은 후속 API에서 처리하며, `file_dependencies`는 4차 기능을 위한 예약 스키마입니다.
 
 **보안 확정 사항**
 - 사용자 API는 세션 쿠키 + CSRF 토큰, `/ws/broker`와 작업 API는 `Authorization: Bearer <Agent 토큰>`으로 인증하며 토큰은 SHA-256 해시만 저장합니다. 상세는 [보안 전략](docs/security-strategy.md)을 참고합니다.
