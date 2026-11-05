@@ -12,4 +12,6 @@ public interface RepositoryCommitRepository extends JpaRepository<RepositoryComm
     List<RepositoryCommit> findByTeamIdAndCommittedAtAfter(Long teamId, Instant since);
 
     List<RepositoryCommit> findByTeamIdAndAuthorUserIdAndCommittedAtAfter(Long teamId, Long authorUserId, Instant since);
+
+    boolean existsByTeamId(Long teamId);
 }

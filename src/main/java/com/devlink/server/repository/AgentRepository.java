@@ -26,6 +26,16 @@ public interface AgentRepository extends JpaRepository<Agent, Long> {
 
     List<Agent> findAllByTeamIdOrderByIdAsc(Long teamId);
 
+    // 담당 Agent 추천 후보. 소유자가 현재 팀 멤버인 Agent만 포함해 탈퇴자의 Agent를 점수 계산 전에 제외한다.
+    @Query("""
+            select agent from Agent agent
+            where agent.teamId = :teamId
+              and agent.ownerUserId in (
+                  select member.userId from TeamMember member where member.teamId = :teamId)
+            order by agent.id
+            """)
+    List<Agent> findRecommendationCandidates(@Param("teamId") Long teamId);
+
     Optional<Agent> findByConnectionTokenHash(String connectionTokenHash);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

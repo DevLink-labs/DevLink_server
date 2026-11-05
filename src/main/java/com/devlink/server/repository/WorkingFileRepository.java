@@ -12,5 +12,10 @@ public interface WorkingFileRepository extends JpaRepository<WorkingFile, Workin
 
     List<WorkingFile> findByIdRepoIdAndExpiresAtAfter(Long repoId, Instant now);
 
+    /** 만료 여부와 관계없이 보존 중인 관측 전체. 작업 관측 상태(FRESH/STALE) 판정에 사용한다. */
+    List<WorkingFile> findByIdRepoIdInAndIdUserIdIn(Collection<Long> repoIds, Collection<Long> userIds);
+
+    boolean existsByIdRepoIdIn(Collection<Long> repoIds);
+
     long deleteByExpiresAtBefore(Instant threshold);
 }
