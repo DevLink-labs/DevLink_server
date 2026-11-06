@@ -111,7 +111,12 @@ public class TaskCreationService {
             return CreateTaskResponse.of(task, false,
                     new TaskDeliveryResult(TaskEventType.DELIVERY_UNKNOWN, "HISTORY_RECORD_FAILED"));
         }
-        return CreateTaskResponse.of(task, false, findLatestDelivery(task.getId()));
+        TaskDeliveryResult delivery = findLatestDelivery(task.getId());
+        // 다른 경로가 전송 후 이력을 저장하기 전이어도 ACK 대기 상태를 응답한다.
+        if (delivery == null && routing.status() == Status.ACK_IN_PROGRESS) {
+            delivery = new TaskDeliveryResult(TaskEventType.ACK_PENDING, null);
+        }
+        return CreateTaskResponse.of(task, false, delivery);
     }
 
     /** 전송 결과를 기록한다. deliveredAt은 유효한 ACK를 저장할 때만 변경한다. */
