@@ -111,7 +111,7 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
 
     @ParameterizedTest
     @EnumSource(value = TaskRoutingResult.Status.class, names = {
-            "RECEIVER_OFFLINE", "CONNECTION_UNAVAILABLE", "CONNECTION_REPLACED"})
+            "RECEIVER_OFFLINE", "CONNECTION_UNAVAILABLE"})
     void routingFailureIsRecordedAndReturned(TaskRoutingResult.Status status) {
         when(routing.sendTask(anyLong())).thenAnswer(invocation ->
                 new TaskRoutingResult(invocation.getArgument(0), status, null, null));
@@ -125,6 +125,22 @@ class TaskCreationIntegrationTest extends AbstractIntegrationTest {
         assertThat(history.getLast().getContent()).isEqualTo(status.name());
         assertThat(service.create(teamId, agentId, request).delivery()).isEqualTo(result.delivery());
         verify(routing, times(1)).sendTask(result.taskId());
+    }
+
+    @Test
+    void connectionReplacementDoesNotRecordDeliveryFailure() {
+        when(routing.sendTask(anyLong())).thenAnswer(invocation ->
+                new TaskRoutingResult(invocation.getArgument(0),
+                        TaskRoutingResult.Status.CONNECTION_REPLACED, null, null));
+
+        var result = service.create(teamId, agentId, request);
+
+        assertThat(result.status()).isEqualTo(TaskStatus.PENDING);
+        assertThat(result.delivery()).isNull();
+        assertThat(tasks.findById(result.taskId()).orElseThrow().getDeliveredAt()).isNull();
+        assertThat(events.findByTaskIdOrderByCreatedAtAsc(result.taskId()))
+                .extracting(TaskEvent::getEventType).containsExactly(TaskEventType.CREATED);
+        verify(routing).sendTask(result.taskId());
     }
 
     @ParameterizedTest

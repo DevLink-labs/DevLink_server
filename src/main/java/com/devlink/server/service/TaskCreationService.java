@@ -119,6 +119,10 @@ public class TaskCreationService {
         return transaction.execute(tx -> {
             Task savedTask = taskRepository.findByIdForUpdate(task.getId())
                     .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+            // 교체된 연결의 결과로 현재 연결의 전달 이력 뒤에 미전송 이력을 추가하지 않는다.
+            if (routing.status() == Status.CONNECTION_REPLACED) {
+                return savedTask;
+            }
             if (savedTask.getDeliveredAt() != null || taskEventRepository
                     .existsByTaskIdAndEventType(task.getId(), TaskEventType.ACK_RECEIVED)) {
                 return savedTask;
