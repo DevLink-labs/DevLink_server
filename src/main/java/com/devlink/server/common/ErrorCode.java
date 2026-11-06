@@ -21,6 +21,7 @@ public enum ErrorCode {
     TASK_CONVERSATION_UNAVAILABLE(HttpStatus.CONFLICT, "요청자와 담당자가 같은 Agent인 Task에서는 질문과 답변을 등록할 수 없습니다."),
     RECEIVER_OFFLINE(HttpStatus.CONFLICT, "수신 Agent의 브로커에 연결할 수 없습니다."),
     DELIVERY_SERVICE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "작업 전달 서비스를 사용할 수 없습니다."),
+    GIT_ROUTING_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "현재 담당 Agent 추천을 처리할 수 없습니다. 잠시 후 다시 요청해주세요."),
     INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다.");
 
     private final HttpStatus status;

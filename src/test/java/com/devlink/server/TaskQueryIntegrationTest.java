@@ -189,11 +189,6 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void webHistoryPreservesAuthorsQuestionReferencesAndRawContentAcrossPages() throws Exception {
-        User viewer = new TransactionTemplate(transactionManager).execute(tx -> {
-            User user = createUser("이력 조회 전용 팀원", passwordEncoder.encode(TEST_PASSWORD));
-            members.save(TeamMember.create(team.getId(), user.getId(), MemberRole.MEMBER));
-            return user;
-        });
         Long taskId = taskIds.get("sentCompleted");
         String body = "첫 줄\n```java\n  return true;\n```\n<script>alert('text')</script> 😀";
         new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
@@ -203,7 +198,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             jdbc.update("update task_events set content = ? where id = ?", body, answer.getId());
             jdbc.update("update tasks set prompt = ? where id = ?", body, taskId);
         });
-        try (HttpClient client = loggedInClient(viewer)) {
+        try (HttpClient client = loggedInClient(owner)) {
             JsonNode first = assertSuccess(webHistoryGet(client, team.getId(), taskId, "?limit=2"));
             assertWebHistoryPage(first, taskId, "2", true, "2", "3");
             JsonNode detail = assertSuccess(get(detailPath(taskId), callerAgent.token()));
@@ -222,7 +217,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
                 assertThat(last.get(field)).isEqualTo(first.get(field));
             }
             assertThat(assertSuccess(webHistoryGet(client, team.getId(), taskId, "?limit=2"))).isEqualTo(first);
-            assertCurrentUser(client, viewer.getId());
+            assertCurrentUser(client, owner.getId());
         }
     }
 
@@ -309,8 +304,8 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
         try (HttpClient client = loggedInClient(owner)) {
             assertError(webHistoryGet(client, team.getId(), taskIds.get("otherTeamPending"), ""), 403, "ACCESS_DENIED");
             assertError(webHistoryGet(client, otherTeam.getId(), taskIds.get("sentCompleted"), ""), 403, "ACCESS_DENIED");
-            assertWebHistoryPage(assertSuccess(webHistoryGet(client, otherTeam.getId(), taskIds.get("otherTeamPending"), "")),
-                    taskIds.get("otherTeamPending"), null, false);
+            assertError(webHistoryGet(client, otherTeam.getId(), taskIds.get("otherTeamPending"), ""),
+                    403, "ACCESS_DENIED");
         }
     }
 
@@ -388,19 +383,14 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void webDetailAllowsMemberWithoutAgentAndReturnsStoredSummaryAndCurrentNames() throws Exception {
-        User viewer = new TransactionTemplate(transactionManager).execute(tx -> {
-            User user = createUser("상세 조회 전용 팀원", passwordEncoder.encode(TEST_PASSWORD));
-            members.save(TeamMember.create(team.getId(), user.getId(), MemberRole.MEMBER));
-            return user;
-        });
+    void webDetailReturnsStoredSummaryAndCurrentNamesForParticipant() throws Exception {
         Long taskId = taskIds.get("sentCompleted");
         String summary = "게시글 응답 지연 분석\n  검증 항목 😀";
         jdbc.update("update tasks set task_summary = ? where id = ?", summary, taskId);
         jdbc.update("update teams set name = ? where id = ?", "변경된 팀 이름", team.getId());
         jdbc.update("update agents set name = ? where id = ?", "변경된 요청 Agent", callerAgent.id());
         jdbc.update("update agents set name = ? where id = ?", "변경된 수신 Agent", teammateAgent.id());
-        try (HttpClient client = loggedInClient(viewer)) {
+        try (HttpClient client = loggedInClient(owner)) {
             JsonNode data = assertSuccess(webDetailGet(client, team.getId(), taskId));
             assertNullableText(data.path("taskSummary"), summary);
             assertThat(data.path("teamName").asText()).isEqualTo("변경된 팀 이름");
@@ -410,7 +400,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             data.fieldNames().forEachRemaining(field -> assertThat(data.get(field)).isEqualTo(common.get(field)));
             assertThat(common.path("resultText").asText()).isEqualTo("테스트 작업 완료");
             assertThat(common.path("prompt").asText()).isEqualTo("목록 조회 테스트: sentCompleted");
-            assertCurrentUser(client, viewer.getId());
+            assertCurrentUser(client, owner.getId());
         }
     }
 
@@ -463,8 +453,8 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
         try (HttpClient client = loggedInClient(owner)) {
             assertError(webDetailGet(client, team.getId(), taskIds.get("otherTeamPending")), 403, "ACCESS_DENIED");
             assertError(webDetailGet(client, otherTeam.getId(), taskIds.get("sentCompleted")), 403, "ACCESS_DENIED");
-            JsonNode allowed = assertSuccess(webDetailGet(client, otherTeam.getId(), taskIds.get("otherTeamPending")));
-            assertThat(allowed.path("teamId").asLong()).isEqualTo(otherTeam.getId());
+            assertError(webDetailGet(client, otherTeam.getId(), taskIds.get("otherTeamPending")),
+                    403, "ACCESS_DENIED");
         }
     }
 
@@ -528,21 +518,16 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void webListAllowsTeamMemberWithoutAgentsAndMatchesCommonTeamResponse() throws Exception {
-        User viewer = new TransactionTemplate(transactionManager).execute(tx -> {
-            User user = createUser("Agent 없는 조회 사용자", passwordEncoder.encode(TEST_PASSWORD));
-            members.save(TeamMember.create(team.getId(), user.getId(), MemberRole.MEMBER));
-            return user;
-        });
+    void webListIncludesAllOwnedAgentsAndStoredSummary() throws Exception {
+        createOtherMembersTasks();
         String summary = "작업 요약\n  코드 확인 😀";
         jdbc.update("update tasks set task_summary = ? where id = ?", summary, taskIds.get("sentCompleted"));
 
-        try (HttpClient client = loggedInClient(viewer)) {
+        try (HttpClient client = loggedInClient(owner)) {
             JsonNode data = assertSuccess(webGet(client, team.getId(), ""));
             assertItems(data, "sameOwnerReceived", "sameOwnerSent", "selfPending", "receivedCompleted",
                     "receivedPending", "sentRejected", "sentFailed", "sentCompleted", "sentInProgress", "sentPending");
             assertPage(data, 0, 20, 10, 1, false);
-            assertThat(data).isEqualTo(assertSuccess(getTasks(callerAgent.token(), "?scope=team")));
             assertNullableText(findItem(data, "sentCompleted").path("taskSummary"), summary);
             assertNullableText(findItem(data, "sentPending").path("taskSummary"), null);
             for (JsonNode item : data.path("items")) {
@@ -552,13 +537,79 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
                     assertThat(item.has(excluded)).isFalse();
                 }
             }
+            assertCurrentUser(client, owner.getId());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void webQueriesReturnEmptyListAndDenyTaskAccessForNonParticipant(boolean hasAgent) throws Exception {
+        User viewer = new TransactionTemplate(transactionManager).execute(tx -> {
+            User user = createUser("작업 비참여 팀원", passwordEncoder.encode(TEST_PASSWORD));
+            members.save(TeamMember.create(team.getId(), user.getId(), MemberRole.MEMBER));
+            if (hasAgent) {
+                createAgent(team, user, "작업에 참여하지 않은 Agent");
+            }
+            return user;
+        });
+        try (HttpClient client = loggedInClient(viewer)) {
+            JsonNode data = assertSuccess(webGet(client, team.getId(), ""));
+            assertItems(data);
+            assertPage(data, 0, 20, 0, 0, false);
+            JsonNode beyond = assertSuccess(webGet(client, team.getId(), "?page=1&size=1&status=PENDING"));
+            assertItems(beyond);
+            assertPage(beyond, 1, 1, 0, 0, false);
+            Long taskId = taskIds.get("sentCompleted");
+            assertError(webDetailGet(client, team.getId(), taskId), 403, "ACCESS_DENIED");
+            assertError(webHistoryGet(client, team.getId(), taskId, ""), 403, "ACCESS_DENIED");
             assertCurrentUser(client, viewer.getId());
         }
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"otherMembersSent", "otherMembersReceived"})
+    void webQueriesDenyOtherMembersTasksEvenToTeamOwnerWithAgentToken(String label) throws Exception {
+        createOtherMembersTasks();
+        Long taskId = taskIds.get(label);
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            createEvent(taskId, TaskEventType.PROGRESS, "다른 팀원의 진행 기록", BASE_TIME);
+            taskFiles.saveAndFlush(TaskFile.of(taskId, "private.txt", ChangeType.ADDED, null));
+        });
+        try (HttpClient client = loggedInClient(owner)) {
+            JsonNode data = assertSuccess(webGet(client, team.getId(), "?size=1"));
+            assertItems(data, "sameOwnerReceived");
+            assertPage(data, 0, 1, 10, 10, true);
+            for (String path : List.of(webDetailPath(team.getId(), taskId), webHistoryPath(team.getId(), taskId))) {
+                assertError(client.send(request(path).GET().build(), HttpResponse.BodyHandlers.ofString()),
+                        403, "ACCESS_DENIED");
+                // 다른 참여자의 Agent 토큰을 보내도 로그인 사용자의 권한을 대신할 수 없다.
+                assertError(client.send(request(path).header("Authorization", "Bearer " + teammateAgent.token())
+                        .GET().build(), HttpResponse.BodyHandlers.ofString()), 403, "ACCESS_DENIED");
+            }
+            assertCurrentUser(client, owner.getId());
+        }
+        try (HttpClient client = loggedInClient(teammate)) {
+            assertSuccess(webDetailGet(client, team.getId(), taskId));
+            JsonNode history = assertSuccess(webHistoryGet(client, team.getId(), taskId, ""));
+            assertWebHistoryPage(history, taskId, null, false, "1");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"sentPending", "receivedPending", "selfPending", "sameOwnerSent", "sameOwnerReceived"})
+    void webDetailAndHistoryAllowTasksForAnyOwnedAgent(String label) throws Exception {
+        Long taskId = taskIds.get(label);
+        try (HttpClient client = loggedInClient(owner)) {
+            JsonNode detail = assertSuccess(webDetailGet(client, team.getId(), taskId));
+            assertThat(detail.path("taskId").asLong()).isEqualTo(taskId);
+            JsonNode history = assertSuccess(webHistoryGet(client, team.getId(), taskId, ""));
+            assertWebHistoryPage(history, taskId, null, false);
+        }
+    }
+
+    @ParameterizedTest
     @CsvSource(delimiter = '|', value = {
-            "PENDING|sameOwnerSent,selfPending,receivedPending,sentPending",
+            "PENDING|sameOwnerSent,receivedPending,sentPending",
             "IN_PROGRESS|sentInProgress",
             "COMPLETED|receivedCompleted,sentCompleted",
             "FAILED|sameOwnerReceived,sentFailed",
@@ -583,6 +634,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             "2|false|sentInProgress,sentPending"
     })
     void webListPaginatesWithStableTotals(int page, boolean hasNext, String labels) throws Exception {
+        createOtherMembersTasks();
         try (HttpClient client = loggedInClient(owner)) {
             JsonNode data = assertSuccess(webGet(client, team.getId(), "?size=4&page=" + page));
             assertItems(data, labels.split(","));
@@ -1767,6 +1819,16 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             createTask("sameOwnerSent", sameOwnerAgent, teammateAgent, TaskStatus.PENDING);
             createTask("sameOwnerReceived", teammateAgent, sameOwnerAgent, TaskStatus.FAILED);
             createTask("otherTeamPending", otherTeamAgent, otherTeamAgent, TaskStatus.PENDING);
+        });
+    }
+
+    private void createOtherMembersTasks() {
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            User user = createUser("다른 작업 참여 팀원", passwordEncoder.encode(TEST_PASSWORD));
+            members.save(TeamMember.create(team.getId(), user.getId(), MemberRole.MEMBER));
+            TestAgent otherMemberAgent = createAgent(team, user, "다른 작업 참여 Agent");
+            createTask("otherMembersSent", teammateAgent, otherMemberAgent, TaskStatus.PENDING);
+            createTask("otherMembersReceived", otherMemberAgent, teammateAgent, TaskStatus.PENDING);
         });
     }
 
