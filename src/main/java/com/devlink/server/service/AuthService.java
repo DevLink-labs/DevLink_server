@@ -29,7 +29,7 @@ public class AuthService {
     @Transactional
     public UserResponse signup(SignupRequest request) {
         String email = normalizeEmail(request.email());
-        if (users.existsByEmailIgnoreCase(email)) {
+        if (users.existsByEmail(email)) {
             throw new BusinessException(ErrorCode.EMAIL_ALREADY_EXISTS);
         }
         User user = User.create(email, request.name(), request.nickname(),
@@ -47,7 +47,7 @@ public class AuthService {
 
     @Transactional(readOnly = true)
     public UserResponse login(LoginRequest request) {
-        User user = users.findByEmailIgnoreCase(normalizeEmail(request.email())).orElse(null);
+        User user = users.findByEmail(normalizeEmail(request.email())).orElse(null);
         String storedPassword = user == null ? null : user.getPassword();
         String passwordHash = storedPassword == null ? dummyPasswordHash : storedPassword;
         String suppliedPassword = request.password();
