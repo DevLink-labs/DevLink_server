@@ -73,6 +73,8 @@ public class TaskQueryService {
 			throw new BusinessException(ErrorCode.ACCESS_DENIED);
 		}
 		
+		validateWebTaskAccess(task, user.userId());
+		
 		List<TaskEventType> eventTypes = List.of(
 				TaskEventType.CREATED,
 				TaskEventType.STATUS_CHANGED,
@@ -146,6 +148,8 @@ public class TaskQueryService {
 			throw new BusinessException(ErrorCode.ACCESS_DENIED);
 		}
 		
+		validateWebTaskAccess(task, user.userId());
+		
 		Map<Long,Agent> agentsById = findAgents(List.of(task));
 		
 		Agent requesterAgent = agentsById.get(task.getRequesterAgentId());
@@ -182,6 +186,19 @@ public class TaskQueryService {
 				); 
 	}
 	
+	private void validateWebTaskAccess(Task task, Long userId) {
+		boolean participant = agentRepository
+				.findUserAgentInTeam(task.getTeamId(), userId)
+				.stream()
+				.anyMatch(agent ->
+				agent.getId().equals(task.getRequesterAgentId())
+				|| agent.getId().equals(task.getReceiverAgentId()));
+		
+		if(!participant) {
+			throw new BusinessException(ErrorCode.ACCESS_DENIED);
+		}
+	}
+	
 	@Transactional(readOnly = true)
 	public TaskListResponse getWebTasks(
 		Long teamId,
@@ -195,7 +212,19 @@ public class TaskQueryService {
 		teamAuthorizationService.requireTeamMember(user.userId(), teamId);
 		Pageable pageable = PageRequest.of(request.page(), request.size());
 		
-		Page<Task> taskPage = taskRepository.findTeamTasks(teamId, request.status(), pageable);
+		List<Long> agentIds = agentRepository
+				.findUserAgentInTeam(teamId,user.userId())
+				.stream()
+				.map(Agent::getId)
+				.toList();
+		
+		Page<Task> taskPage;
+		
+		if(agentIds.isEmpty()) {
+			taskPage = Page.empty(pageable);
+		}else {
+			taskPage = taskRepository.findAgentTasks(teamId, agentIds, "all", request.status(), pageable);
+		}
 		
 		return toListResponse(taskPage);
 	}
