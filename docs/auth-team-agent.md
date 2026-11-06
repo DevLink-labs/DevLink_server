@@ -16,6 +16,8 @@
 
 사용자 정보에는 `userId`, `email`, `name`, `nickname`, `createdAt`을 반환하며 비밀번호·해시는 포함하지 않습니다. 이메일은 앞뒤 공백을 제거하고 소문자로 저장·조회합니다. 가입 비밀번호는 최소 8자이며 가입·로그인 모두 UTF-8 기준 72바이트 이하로 제한합니다. 이메일 중복은 `409 EMAIL_ALREADY_EXISTS`, 계정 또는 비밀번호 불일치는 `401 INVALID_CREDENTIALS`, 입력 오류는 `400 VALIDATION_FAILED`입니다.
 
+로그인과 회원가입 중복 검사는 소문자로 변환한 입력값을 일반 동등 비교해 기존 `uk_users_email` 색인을 활용할 수 있도록 합니다. V11은 기존 대문자 이메일을 소문자로 정리하며 변환 시 중복 계정이 있으면 마이그레이션을 중단합니다. 문제 분석·이전 실험 기록·후속 측정 절차는 [이메일 조회 리팩토링 기록](performance/email-lookup-refactoring.md)에 정리했습니다.
+
 프론트엔드는 모든 인증 요청에 `credentials: "include"`를 사용합니다.
 
 1. `GET /api/v1/auth/csrf`로 토큰을 받고 `data.headerName`을 이름으로, `data.token`을 값으로 POST 요청 헤더에 전달합니다.
