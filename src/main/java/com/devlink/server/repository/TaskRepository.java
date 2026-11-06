@@ -18,6 +18,9 @@ public interface TaskRepository extends JpaRepository<Task, Long> {
 
     Optional<Task> findByRequesterAgentIdAndRequestKey(Long requesterAgentId, String requestKey);
 
+    List<Task> findByReceiverAgentIdAndStatusAndDeliveredAtIsNullOrderByIdAsc(
+            Long receiverAgentId, TaskStatus status);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select t from Task t where t.id = :taskId")
     Optional<Task> findByIdForUpdate(@Param("taskId") Long taskId);

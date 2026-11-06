@@ -11,17 +11,21 @@ import com.devlink.server.domain.agent.ToolType;
 import com.devlink.server.realtime.ConnectionRegistry;
 import com.devlink.server.repository.AgentRepository;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.web.socket.WebSocketSession;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class AgentPresenceServiceTest {
     private final AgentRepository agents = mock(AgentRepository.class);
     private final ConnectionRegistry connections = new ConnectionRegistry();
-    private final AgentPresenceService service = new AgentPresenceService(agents, connections);
+    private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+    private final AgentPresenceService service = new AgentPresenceService(agents, connections, events);
     private final AgentPrincipal principal = new AgentPrincipal(11, 21, 31);
     private final Agent agent = Agent.create(31L, 21L, "Codex", null, ToolType.CODEX, "server");
 
@@ -35,6 +39,7 @@ class AgentPresenceServiceTest {
 
         assertThat(agent.getStatus()).isEqualTo(AgentStatus.ONLINE);
         assertThat(agent.getLastSeenAt()).isBetween(before, LocalDateTime.now());
+        verify(events).publishEvent(new AgentPresenceService.AgentOnline(11L, session));
     }
 
     @Test
@@ -49,6 +54,7 @@ class AgentPresenceServiceTest {
 
         assertThat(agent.getStatus()).isEqualTo(AgentStatus.OFFLINE);
         assertThat(agent.getLastSeenAt()).isEqualTo(lastSeen);
+        verifyNoInteractions(events);
     }
 
     @Test
@@ -98,6 +104,7 @@ class AgentPresenceServiceTest {
 
         assertThat(agent.getStatus()).isEqualTo(AgentStatus.OFFLINE);
         assertThat(agent.getLastSeenAt()).isNull();
+        verifyNoInteractions(events);
     }
 
     @Test

@@ -28,6 +28,7 @@ import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.TaskRepository;
 import com.devlink.server.repository.TeamRepository;
 import com.devlink.server.repository.UserRepository;
+import com.devlink.server.service.AgentPresenceService;
 import com.devlink.server.service.AgentTokenVerifier;
 import com.devlink.server.service.TaskRoutingService;
 import com.devlink.server.service.TaskCreationService;
@@ -59,6 +60,7 @@ import static org.awaitility.Awaitility.await;
 class TaskRoutingIntegrationTest extends AbstractIntegrationTest {
     @Autowired private TaskRoutingService routing;
     @Autowired private TaskCreationService creation;
+    @Autowired private AgentPresenceService presence;
     @Autowired private TaskEventRepository taskEvents;
     @Autowired private TaskRepository tasks;
     @Autowired private AgentRepository agents;
@@ -104,27 +106,45 @@ class TaskRoutingIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void readyOnlyAndStaleOnlineReceiversCannotCreateAnyTask() throws Exception {
-        String key = UUID.randomUUID().toString();
-        var request = new CreateTaskRequest(key, receiver.getId(), "Offline preflight");
+    void reconnectDeliversOnlyPendingUnacknowledgedTasksInIdOrder() throws Exception {
+        var first = creation.create(teamId, requester.getId(),
+                new CreateTaskRequest(UUID.randomUUID().toString(), receiver.getId(), "First offline task"));
+        assertThat(first.delivery().status()).isEqualTo(TaskEventType.DELIVERY_NOT_SENT);
+        assertThat(first.delivery().reasonCode()).isEqualTo("RECEIVER_OFFLINE");
+        assertPendingWithoutDelivery(first.taskId());
+
+        Task delivered = saveTask();
+        delivered.markDelivered(LocalDateTime.now());
+        tasks.saveAndFlush(delivered);
+        Task accepted = saveTask();
+        accepted.accept(receiver.getId());
+        tasks.saveAndFlush(accepted);
+
         try (var client = HttpClient.newHttpClient();
                 var broker = connect(client, "receiver-token", receiver.getId())) {
-            assertOfflineCreationRejected(request);
+            var second = creation.create(teamId, requester.getId(),
+                    new CreateTaskRequest(UUID.randomUUID().toString(), receiver.getId(), "Second offline task"));
+            assertPendingWithoutDelivery(second.taskId());
+            assertThat(broker.listener.messages.poll(200, TimeUnit.MILLISECONDS)).isNull();
+
+            var session = connections.findByAgentId(receiver.getId().toString()).orElseThrow();
+            new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+                presence.updateStatus(principal(receiver), session, AgentStatus.ONLINE);
+                tx.setRollbackOnly();
+            });
+            assertThat(broker.listener.messages.poll(200, TimeUnit.MILLISECONDS)).isNull();
+
+            broker.presence("ONLINE");
+
+            assertThat(broker.next().path("payload").path("task_id").asLong()).isEqualTo(first.taskId());
+            assertThat(broker.next().path("payload").path("task_id").asLong()).isEqualTo(second.taskId());
+            await().untilAsserted(() ->
+                    assertThat(taskEvents.findByTaskIdOrderBySequenceAsc(first.taskId()))
+                            .extracting(TaskEvent::getEventType)
+                            .containsExactly(TaskEventType.CREATED, TaskEventType.DELIVERY_NOT_SENT,
+                                    TaskEventType.ACK_PENDING));
             assertThat(broker.listener.messages.poll(200, TimeUnit.MILLISECONDS)).isNull();
         }
-        Agent stale = agents.findById(receiver.getId()).orElseThrow();
-        stale.markOnline(LocalDateTime.now());
-        agents.saveAndFlush(stale);
-        assertOfflineCreationRejected(request);
-    }
-
-    private void assertOfflineCreationRejected(CreateTaskRequest request) {
-        long eventsBefore = taskEvents.count();
-        assertThatThrownBy(() -> creation.create(teamId, requester.getId(), request))
-                .isInstanceOfSatisfying(com.devlink.server.common.BusinessException.class,
-                        error -> assertThat(error.getErrorCode()).isEqualTo(com.devlink.server.common.ErrorCode.RECEIVER_OFFLINE));
-        assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(teamId)).isEmpty();
-        assertThat(taskEvents.count()).isEqualTo(eventsBefore);
     }
 
     @Test
