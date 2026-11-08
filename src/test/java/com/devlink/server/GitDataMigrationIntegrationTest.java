@@ -62,7 +62,8 @@ class GitDataMigrationIntegrationTest extends AbstractIntegrationTest {
         previousAgent = db.queryForMap("select * from agents where id = ?", agentId);
         previousTask = db.queryForMap("select * from tasks where id = ?", taskId);
 
-        Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).load().migrate();
+        Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .target("10").load().migrate();
     }
 
     @AfterEach

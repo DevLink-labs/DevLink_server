@@ -22,6 +22,8 @@ public enum ErrorCode {
     RECEIVER_OFFLINE(HttpStatus.CONFLICT, "수신 Agent의 브로커에 연결할 수 없습니다."),
     DELIVERY_SERVICE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "작업 전달 서비스를 사용할 수 없습니다."),
     GIT_ROUTING_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "현재 담당 Agent 추천을 처리할 수 없습니다. 잠시 후 다시 요청해주세요."),
+    DEPENDENCY_GRAPH_CONFLICT(HttpStatus.CONFLICT, "저장소 설정 또는 그래프 버전이 바뀌었습니다."),
+    DEPENDENCY_GRAPH_TOO_LARGE(HttpStatus.PAYLOAD_TOO_LARGE, "코드 의존성 요청이 너무 큽니다."),
     INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다.");
 
     private final HttpStatus status;
