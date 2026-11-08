@@ -21,13 +21,14 @@ import com.devlink.server.domain.gitsetting.UserGitSetting;
 import com.devlink.server.domain.team.Team;
 import com.devlink.server.domain.user.User;
 import com.devlink.server.repository.*;
+import com.devlink.server.service.GitEmailHasher;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** V10 스키마와 3차 Git 데이터 엔티티 매핑을 실제 PostgreSQL로 검증한다. */
+/** 3차 Git 데이터 및 이메일 해시 스키마의 엔티티 매핑 검증 */
 @Transactional
 class GitDataPersistenceIntegrationTest extends AbstractIntegrationTest {
     private static final String SHA256 = "a".repeat(64);
@@ -75,7 +76,8 @@ class GitDataPersistenceIntegrationTest extends AbstractIntegrationTest {
         Team team = teams.save(Team.create("Git", "git-invite"));
         Instant observedAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
 
-        gitSettings.save(UserGitSetting.register(user.getId(), "git@example.com"));
+        String gitEmailHash = GitEmailHasher.hash("git@example.com");
+        gitSettings.save(UserGitSetting.register(user.getId(), gitEmailHash));
         TeamGitRepository repo = repositories.save(TeamGitRepository.create(team.getId(), SHA256));
         RepositoryCommit commit = commits.save(RepositoryCommit.of(team.getId(), repo.getId(),
                 "0123456789abcdef0123456789abcdef01234567", observedAt, user.getId()));
@@ -89,8 +91,8 @@ class GitDataPersistenceIntegrationTest extends AbstractIntegrationTest {
         em.flush();
         em.clear();
 
-        assertThat(gitSettings.findByGitEmail("git@example.com")).map(UserGitSetting::getUserId).contains(user.getId());
-        assertThat(gitSettings.existsByGitEmailAndUserIdNot("git@example.com", user.getId())).isFalse();
+        assertThat(gitSettings.findByGitEmailHash(gitEmailHash)).map(UserGitSetting::getUserId).contains(user.getId());
+        assertThat(gitSettings.existsByGitEmailHashAndUserIdNot(gitEmailHash, user.getId())).isFalse();
         assertThat(repositories.findByTeamIdAndOriginUrlSha256(team.getId(), SHA256)).map(TeamGitRepository::getId).contains(repo.getId());
 
         RepositoryCommit savedCommit = commits.findById(commit.getId()).orElseThrow();
