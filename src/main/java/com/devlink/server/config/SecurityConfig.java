@@ -90,7 +90,9 @@ public class SecurityConfig {
         				"/api/v1/tasks/*/complete"
         				)
                 // 담당 Agent 추천은 Agent 토큰 전용 경로다.
-                .requestMatchers(HttpMethod.POST, "/api/v1/teams/*/agents/recommendations"))
+                .requestMatchers(HttpMethod.POST, "/api/v1/teams/*/agents/recommendations")
+                // 팀·파트 Context 요약 조회도 Agent 토큰 전용 경로다.
+                .requestMatchers(HttpMethod.GET, "/api/v1/teams/*/context"))
                 .cors(cors -> cors.configurationSource(apiCorsConfigurationSource(allowedOrigins)))
                 // Agent 토큰 인증 시 기존 사용자 세션 ID 변경 방지
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)

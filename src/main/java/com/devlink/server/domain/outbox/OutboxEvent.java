@@ -36,6 +36,9 @@ public class OutboxEvent {
     @Column(name = "message_key", length = 255, updatable = false)
     private String messageKey;
 
+    @Column(name = "context_order", updatable = false)
+    private Long contextOrder;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "message", nullable = false, updatable = false, columnDefinition = "JSONB")
     private JsonNode message;
@@ -69,6 +72,12 @@ public class OutboxEvent {
     public static OutboxEvent create(UUID outboxId, String eventType, String aggregateType,
                                      String aggregateId, String destination, String messageKey,
                                      JsonNode message) {
+        return create(outboxId, eventType, aggregateType, aggregateId, destination, messageKey, message, null);
+    }
+
+    public static OutboxEvent create(UUID outboxId, String eventType, String aggregateType,
+                                     String aggregateId, String destination, String messageKey,
+                                     JsonNode message, Long contextOrder) {
         Objects.requireNonNull(outboxId, "outboxId must not be null");
         requireText(eventType, "eventType", 100);
         requireText(aggregateType, "aggregateType", 50);
@@ -89,6 +98,7 @@ public class OutboxEvent {
         entity.aggregateId = aggregateId;
         entity.destination = destination;
         entity.messageKey = messageKey;
+        entity.contextOrder = contextOrder;
         entity.message = message.deepCopy();
         entity.status = OutboxStatus.PENDING;
         return entity;

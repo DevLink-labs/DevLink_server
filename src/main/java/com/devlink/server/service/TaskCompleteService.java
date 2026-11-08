@@ -28,6 +28,7 @@ public class TaskCompleteService {
     private final TaskEventRepository taskEventRepository;
     private final TeamAuthorizationService teamAuthorizationService;
     private final TaskCompletionOutboxWriter taskCompletionOutboxWriter;
+    private final TeamContextOutboxWriter teamContextOutbox;
 
     @Transactional
     public TaskCompleteResponse complete(
@@ -46,9 +47,11 @@ public class TaskCompleteService {
     	task.complete(agent.agentId(), request.resultText());
 
     	saveTaskFiles(task.getId(), request.taskFiles());
-    	saveCompletionEvent(task, previousStatus);
+        TaskEvent completion = saveCompletionEvent(task, previousStatus);
 
     	taskCompletionOutboxWriter.enqueue(task);
+        // 팀 Context 갱신 신호도 같은 트랜잭션에 남긴다.
+        teamContextOutbox.enqueue(task, completion);
 
     	return new TaskCompleteResponse(
     			task.getId(),
@@ -58,10 +61,10 @@ public class TaskCompleteService {
 
     }
 
-    private void saveCompletionEvent(
+    private TaskEvent saveCompletionEvent(
     	Task task,
     	TaskStatus previousStatus) {
-    	taskEventRepository.save(TaskEvent.of(
+        return taskEventRepository.save(TaskEvent.of(
     			task.getId(),
     			TaskEventType.STATUS_CHANGED,
     			previousStatus + " → " +task.getStatus()+": 작업 완료"));

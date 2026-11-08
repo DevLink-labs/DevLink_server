@@ -66,6 +66,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -78,6 +79,8 @@ class TaskCompleteTransactionIntegrationTest extends AbstractIntegrationTest {
     @MockitoSpyBean private TaskFileRepository files;
     @MockitoSpyBean private TaskEventRepository events;
     @MockitoSpyBean private OutboxEventRepository outbox;
+    // 이 테스트는 outbox 행 수 증가를 1로 고정하므로 팀 Context 갱신 신호는 끈다.
+    @MockitoBean private com.devlink.server.service.TeamContextOutboxWriter teamContextOutbox;
     @Autowired private UserRepository users;
     @Autowired private TeamRepository teams;
     @Autowired private TeamMemberRepository members;

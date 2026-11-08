@@ -26,6 +26,7 @@ public class TaskMessageService {
     private final AgentRepository agents;
     private final TeamAuthorizationService authorization;
     private final TaskMessageOutboxWriter outbox;
+    private final TeamContextOutboxWriter teamContextOutbox;
 
     @Transactional
     public TaskMessageResponse createQuestion(Long taskId, long authorId, TaskQuestionRequest request) {
@@ -94,6 +95,8 @@ public class TaskMessageService {
                 TaskEvent.of(taskId, type, message, authorId, questionEventId, requestKey));
         Long receiverId = requester ? task.getReceiverAgentId() : task.getRequesterAgentId();
         outbox.enqueue(event, receiverId);
+        // 팀 Context 갱신 신호도 같은 트랜잭션에 남긴다.
+        teamContextOutbox.enqueue(task, event);
         return TaskMessageResponse.from(event, author.getName(), false);
     }
 
