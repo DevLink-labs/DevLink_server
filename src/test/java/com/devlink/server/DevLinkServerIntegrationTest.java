@@ -41,7 +41,7 @@ class DevLinkServerIntegrationTest extends AbstractIntegrationTest {
                         "FileDependency");
         assertThat(flyway.info().applied())
                 .extracting(migration -> migration.getVersion().getVersion())
-                .containsSubsequence("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "15");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15");
         assertThat(flyway.info().pending()).isEmpty();
         assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("15");
         assertThat(flyway.validateWithResult().validationSuccessful).isTrue();
@@ -50,7 +50,7 @@ class DevLinkServerIntegrationTest extends AbstractIntegrationTest {
         assertThat(tables).containsExactlyInAnyOrder("users", "teams", "team_members", "agents",
                 "tasks", "task_files", "task_events", "outbox_events", "flyway_schema_history",
                 "user_git_settings", "team_repositories", "repository_commits", "commit_files",
-                "working_files", "file_dependencies");
+                "working_files", "file_dependencies", "repository_dependency_graphs");
 
         var health = rest.getForEntity("/api/v1/health", JsonNode.class);
         assertThat(health.getStatusCode()).isEqualTo(HttpStatus.OK);
