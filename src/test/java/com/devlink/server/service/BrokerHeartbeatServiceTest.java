@@ -56,7 +56,7 @@ class BrokerHeartbeatServiceTest {
         ConnectionRegistry realConnections = new ConnectionRegistry();
         AgentRepository agents = mock(AgentRepository.class);
         AgentPresenceService realPresence = new AgentPresenceService(
-                agents, realConnections, mock(org.springframework.context.ApplicationEventPublisher.class));
+                agents, realConnections, mock(org.springframework.context.ApplicationEventPublisher.class), 40000);
         BrokerHeartbeatService service = new BrokerHeartbeatService(
                 connections, realPresence, 40000, acknowledgements);
         WebSocketSession previous = session(11);

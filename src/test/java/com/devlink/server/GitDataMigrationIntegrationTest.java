@@ -6,10 +6,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import javax.sql.DataSource;
+import com.devlink.server.service.GitEmailHasher;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,7 +38,7 @@ class GitDataMigrationIntegrationTest extends AbstractIntegrationTest {
 
     @BeforeEach
     void migrateExistingV9Data() throws SQLException {
-        // Testcontainers DB 안의 독립 스키마에서 기존 데이터가 있는 V9 → V10을 검증한다.
+        // 독립 스키마에서 기존 V9 데이터의 최신 Git 스키마 마이그레이션 검증
         schema = "git_migration_" + UUID.randomUUID().toString().replace("-", "");
         Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .target("9").load().migrate();
@@ -62,8 +64,7 @@ class GitDataMigrationIntegrationTest extends AbstractIntegrationTest {
         previousAgent = db.queryForMap("select * from agents where id = ?", agentId);
         previousTask = db.queryForMap("select * from tasks where id = ?", taskId);
 
-        Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .target("10").load().migrate();
+        Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).load().migrate();
     }
 
     @AfterEach
@@ -102,19 +103,61 @@ class GitDataMigrationIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void gitEmailStoresPlaintextAndEnforcesOneIdentityPerUserAndUniqueEmail() {
-        db.update("insert into user_git_settings (user_id, git_email) values (?, ?)", userId, "git-owner@example.com");
-        assertThat(db.queryForObject("select git_email from user_git_settings where user_id = ?", String.class, userId))
-                .isEqualTo("git-owner@example.com");
+    void upgradeHashesExistingV10EmailsAndPreservesRegistrationTime() throws SQLException {
+        String legacySchema = "git_identity_migration_" + UUID.randomUUID().toString().replace("-", "");
+        Flyway.configure().dataSource(dataSource).schemas(legacySchema).defaultSchema(legacySchema)
+                .target("10").load().migrate();
+        try (Connection legacyConnection = dataSource.getConnection()) {
+            legacyConnection.setSchema(legacySchema);
+            JdbcTemplate legacyDb = new JdbcTemplate(new SingleConnectionDataSource(legacyConnection, true));
+            long legacyUser = legacyDb.queryForObject("""
+                    insert into users (email, name, password)
+                    values ('legacy@example.com', '기존 사용자', 'test') returning id
+                    """, Long.class);
+            String email = " \tMixed.Case@Example.com\r\n ";
+            legacyDb.update("""
+                    insert into user_git_settings (user_id, git_email, registered_at)
+                    values (?, ?, TIMESTAMPTZ '2026-11-05 00:00:00.123456+00')
+                    """, legacyUser, email);
+            var registeredAt = legacyDb.queryForObject(
+                    "select registered_at from user_git_settings where user_id = ?",
+                    java.sql.Timestamp.class, legacyUser).toInstant();
+
+            Flyway.configure().dataSource(dataSource).schemas(legacySchema).defaultSchema(legacySchema)
+                    .load().migrate();
+
+            assertThat(legacyDb.queryForObject(
+                    "select git_email_hash from user_git_settings where user_id = ?", String.class, legacyUser))
+                    .isEqualTo(GitEmailHasher.hash(email)).hasSize(64).doesNotContain("@");
+            assertThat(legacyDb.queryForObject(
+                    "select registered_at from user_git_settings where user_id = ?",
+                    java.sql.Timestamp.class, legacyUser).toInstant()).isEqualTo(registeredAt);
+            assertThat(registeredAt).isEqualTo(Instant.parse("2026-11-05T00:00:00.123456Z"));
+            assertThat(legacyDb.queryForObject("""
+                    select count(*) from information_schema.columns
+                    where table_schema = ? and table_name = 'user_git_settings' and column_name = 'git_email'
+                    """, Long.class, legacySchema)).isZero();
+            assertThatThrownBy(() -> legacyDb.update(
+                    "update user_git_settings set git_email_hash = ? where user_id = ?", email, legacyUser))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+        }
+    }
+
+    @Test
+    void gitEmailStoresHashAndEnforcesOneIdentityPerUserAndUniqueEmail() {
+        String hash = GitEmailHasher.hash("git-owner@example.com");
+        db.update("insert into user_git_settings (user_id, git_email_hash) values (?, ?)", userId, hash);
+        assertThat(db.queryForObject("select git_email_hash from user_git_settings where user_id = ?", String.class, userId))
+                .isEqualTo(hash);
         assertThat(db.queryForMap("select registered_at from user_git_settings where user_id = ?", userId)
                 .get("registered_at")).isNotNull();
-        assertThatThrownBy(() -> db.update("insert into user_git_settings (user_id, git_email) values (?, ?)",
-                userId, "replacement@example.com")).isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> db.update("insert into user_git_settings (user_id, git_email) values (?, ?)",
-                otherUserId, "git-owner@example.com")).isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> db.update("insert into user_git_settings (user_id, git_email) values (?, ?)",
-                Long.MAX_VALUE, "missing@example.com")).isInstanceOf(DataIntegrityViolationException.class);
-        db.update("update user_git_settings set git_email = ? where user_id = ?", "replacement@example.com", userId);
+        assertThatThrownBy(() -> db.update("insert into user_git_settings (user_id, git_email_hash) values (?, ?)",
+                userId, GitEmailHasher.hash("replacement@example.com"))).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> db.update("insert into user_git_settings (user_id, git_email_hash) values (?, ?)",
+                otherUserId, hash)).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> db.update("insert into user_git_settings (user_id, git_email_hash) values (?, ?)",
+                Long.MAX_VALUE, GitEmailHasher.hash("missing@example.com"))).isInstanceOf(DataIntegrityViolationException.class);
+        db.update("update user_git_settings set git_email_hash = ? where user_id = ?", GitEmailHasher.hash("replacement@example.com"), userId);
         assertThat(db.queryForObject("select count(*) from user_git_settings", Long.class)).isEqualTo(1L);
     }
 

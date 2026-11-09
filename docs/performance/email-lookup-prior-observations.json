@@ -1,0 +1,63 @@
+{
+  "provenance": "이전 대화에서 수행한 격리 로컬 실험의 기록을 재작성한 자료. 원본 실행 로그와 임시 DB는 보관되지 않았음.",
+  "experimentType": "기존 UPPER(email) 조회에 표현식 색인을 추가하고 제거한 A-B-A 비교",
+  "isMeasurementOfCurrentRefactor": false,
+  "originalInvestigationCommit": "b4553eb",
+  "currentImplementationBaseCommit": "73b4bc8",
+  "environment": {
+    "database": "PostgreSQL 16.15, disposable Docker container",
+    "java": "21",
+    "userCount": 200001,
+    "httpConcurrency": 1,
+    "httpWarmupsPerCondition": 12,
+    "httpSamplesPerCondition": 80,
+    "sqlExplainRunsPerCondition": 8,
+    "sqlExplainDiscardedWarmupsPerCondition": 1,
+    "sqlLogging": "Hibernate SQL DEBUG enabled in every condition",
+    "httpScope": "실제 로그인 성공 요청의 HTTP 왕복 시간. CSRF 조회는 측정 구간 밖에서 수행.",
+    "sqlScope": "EXPLAIN ANALYZE의 Execution Time 중앙값. HTTP 시간과 별도로 측정."
+  },
+  "conditions": [
+    {
+      "name": "A_original",
+      "predicate": "upper(email) = upper(?)",
+      "extraExpressionIndex": false,
+      "plan": "Gather -> Parallel Seq Scan",
+      "sharedHitBlocks": 3178,
+      "sharedReadBlocks": 0,
+      "sqlExecutionMedianMs": 22.498,
+      "httpP50Ms": 91.251,
+      "httpP95Ms": 108.683
+    },
+    {
+      "name": "B_expression_index",
+      "predicate": "upper(email) = upper(?)",
+      "extraExpressionIndex": true,
+      "plan": "Index Scan on ix_bench_users_upper_email",
+      "sharedHitBlocks": 4,
+      "sharedReadBlocks": 0,
+      "sqlExecutionMedianMs": 0.034,
+      "httpP50Ms": 69.353,
+      "httpP95Ms": 81.147
+    },
+    {
+      "name": "A2_expression_index_removed",
+      "predicate": "upper(email) = upper(?)",
+      "extraExpressionIndex": false,
+      "plan": "Gather -> Parallel Seq Scan",
+      "sharedHitBlocks": 3178,
+      "sharedReadBlocks": 0,
+      "sqlExecutionMedianMs": 20.86,
+      "httpP50Ms": 87.543,
+      "httpP95Ms": 96.959
+    }
+  ],
+  "currentRefactorMeasurements": {
+    "predicate": "email = ? (input normalized to lowercase)",
+    "targetIndex": "uk_users_email",
+    "sqlExecutionMedianMs": null,
+    "httpP50Ms": null,
+    "httpP95Ms": null,
+    "status": "빌드·테스트 금지 지침에 따라 이번 변경의 성능 측정은 실행하지 않음"
+  }
+}

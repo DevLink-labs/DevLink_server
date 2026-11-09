@@ -51,13 +51,16 @@ public class AgentRecommendationService {
     private final AgentRepository agents;
     private final TeamAuthorizationService teams;
     private final RecommendationGitEvidenceService gitEvidence;
+    private final AgentPresenceService presence;
     private final Clock clock;
 
     public AgentRecommendationService(AgentRepository agents, TeamAuthorizationService teams,
-            RecommendationGitEvidenceService gitEvidence, ObjectProvider<Clock> clocks) {
+            RecommendationGitEvidenceService gitEvidence, AgentPresenceService presence,
+            ObjectProvider<Clock> clocks) {
         this.agents = agents;
         this.teams = teams;
         this.gitEvidence = gitEvidence;
+        this.presence = presence;
         this.clock = clocks.getIfAvailable(Clock::systemUTC);
     }
 
@@ -150,7 +153,7 @@ public class AgentRecommendationService {
         return new ScoredCandidate(agent, matchedRoles, evidence, role, working, frequency, recency);
     }
 
-    private static RecommendationCandidateResponse toResponse(ScoredCandidate candidate, InsufficientReason reason) {
+    private RecommendationCandidateResponse toResponse(ScoredCandidate candidate, InsufficientReason reason) {
         UserEvidence evidence = candidate.evidence();
         List<RelatedFileResponse> relatedFiles = evidence.relatedFiles().stream()
                 .sorted(RELATED_FILE_ORDER)
@@ -164,11 +167,9 @@ public class AgentRecommendationService {
                 RecommendationScorePolicy.display(candidate.frequency()),
                 RecommendationScorePolicy.display(candidate.recency()));
         Agent agent = candidate.agent();
-        // TODO(최보경, 접속 상태 연계): connectionStatus는 agents.status 컬럼의 추천 시점 값을 그대로 쓴다.
-        //  브로커 연결 레지스트리(ConnectionRegistry)와 하트비트 만료를 반영한 실제 연결 여부로 대체하고,
-        //  OFFLINE 후보를 선택해 create_task가 RECEIVER_OFFLINE을 돌려주는 전달 경로를 검증한다.
-        //  점수에는 넣지 않는다. 상세는 docs/agent-recommendation.md의 "접속 상태 연계" 절 참고.
-        return new RecommendationCandidateResponse(agent.getId(), agent.getName(), agent.getPart(), agent.getStatus(),
+        // 점수로 선정된 최대 5명에 대해서만 실제 접속 상태를 조회한다. 점수·순위에는 반영하지 않는다.
+        return new RecommendationCandidateResponse(agent.getId(), agent.getName(), agent.getPart(),
+                presence.connectionStatus(agent),
                 RecommendationScorePolicy.display(candidate.score()), scores, candidate.matchedRoles(), relatedFiles,
                 evidence.latestCommitAt(), evidence.workingObservedAt(), reason);
     }

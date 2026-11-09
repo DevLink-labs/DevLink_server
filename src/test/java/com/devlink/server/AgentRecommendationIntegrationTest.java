@@ -7,6 +7,7 @@ import java.net.http.HttpResponse;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -14,6 +15,10 @@ import java.util.UUID;
 import com.devlink.server.common.AgentTokenHash;
 import com.devlink.server.domain.agent.Agent;
 import com.devlink.server.domain.agent.AgentPart;
+import com.devlink.server.domain.agent.AgentStatus;
+import com.devlink.server.domain.task.TaskStatus;
+import com.devlink.server.domain.taskevent.TaskEvent;
+import com.devlink.server.domain.taskevent.TaskEventType;
 import com.devlink.server.domain.agent.ToolType;
 import com.devlink.server.domain.gitrepo.CommitChangeType;
 import com.devlink.server.domain.gitrepo.CommitFile;
@@ -34,15 +39,22 @@ import com.devlink.server.repository.TeamMemberRepository;
 import com.devlink.server.repository.TeamRepository;
 import com.devlink.server.repository.UserRepository;
 import com.devlink.server.repository.WorkingFileRepository;
+import com.devlink.server.repository.TaskRepository;
+import com.devlink.server.repository.TaskEventRepository;
+import com.devlink.server.realtime.ConnectionRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /** 담당 Agent 추천 API를 실제 PostgreSQL과 Agent 토큰 인증으로 검증한다. */
 class AgentRecommendationIntegrationTest extends AbstractIntegrationTest {
@@ -61,6 +73,9 @@ class AgentRecommendationIntegrationTest extends AbstractIntegrationTest {
     @Autowired private WorkingFileRepository workingFiles;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private ObjectMapper json;
+    @Autowired private ConnectionRegistry connections;
+    @Autowired private TaskRepository tasks;
+    @Autowired private TaskEventRepository taskEvents;
 
     private Team team;
     private Team otherTeam;
@@ -247,9 +262,90 @@ class AgentRecommendationIntegrationTest extends AbstractIntegrationTest {
         assertError(post(otherTeam.getId(), requester.token(), body(QUESTION, null)), 403, "ACCESS_DENIED");
     }
 
+    @Test
+    void realBrokerDisconnectAndReconnectOnlyChangeConnectionStatus() throws Exception {
+        JsonNode baseline = assertSuccess(post(team.getId(), requester.token(), body(QUESTION, null)));
+        assertThat(baseline.path("candidates").get(0).path("connectionStatus").asText()).isEqualTo("OFFLINE");
+
+        try (var broker = OnlineTestBroker.connect(port, agentB.token(), agentB.id(), agents)) {
+            assertSameRankingWithOnlineFirstCandidate(baseline);
+        }
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertThat(connections.findByAgentId(agentB.id().toString())).isEmpty();
+            assertThat(agents.findById(agentB.id()).orElseThrow().getStatus()).isEqualTo(AgentStatus.OFFLINE);
+        });
+        JsonNode disconnected = assertSuccess(post(team.getId(), requester.token(), body(QUESTION, null)));
+        assertThat(disconnected.path("candidates")).isEqualTo(baseline.path("candidates"));
+
+        try (var broker = OnlineTestBroker.connect(port, agentB.token(), agentB.id(), agents)) {
+            assertSameRankingWithOnlineFirstCandidate(baseline);
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(AgentStatus.class)
+    void recommendedDisconnectedCandidateCreatesPendingTaskWithExistingDeliveryReason(AgentStatus savedStatus)
+            throws Exception {
+        if (savedStatus == AgentStatus.ONLINE) {
+            // DB 갱신이 늦어 ONLINE만 남았지만 실제 브로커 연결은 없는 상태를 재현한다.
+            new TransactionTemplate(transactionManager).executeWithoutResult(tx ->
+                    agents.findById(agentB.id()).orElseThrow().markOnline(LocalDateTime.now()));
+        }
+        JsonNode recommendation = assertSuccess(post(team.getId(), requester.token(), body(QUESTION, null)));
+        JsonNode selected = recommendation.path("candidates").get(0);
+        assertThat(selected.path("agentId").asLong()).isEqualTo(agentB.id());
+        assertThat(selected.path("connectionStatus").asText()).isEqualTo("OFFLINE");
+        // 추천 조회가 DB의 상태를 덮어쓰지 않아 기존 전달 사유도 구분된다.
+        assertThat(agents.findById(agentB.id()).orElseThrow().getStatus()).isEqualTo(savedStatus);
+
+        String key = UUID.randomUUID().toString();
+        String request = json.writeValueAsString(json.createObjectNode()
+                .put("requestKey", key).put("receiverAgentId", selected.path("agentId").asLong())
+                .put("prompt", "추천된 후보에게 작업 요청"));
+        HttpResponse<String> response = postPath("/api/v1/tasks/" + team.getId(), requester.token(), request);
+        assertThat(response.statusCode()).as("HTTP response: %s", response.body()).isEqualTo(201);
+        JsonNode envelope = json.readTree(response.body());
+        assertThat(envelope.path("success").asBoolean()).isTrue();
+        JsonNode created = envelope.path("data");
+        assertThat(created.path("status").asText()).isEqualTo("PENDING");
+        assertThat(created.path("delivery").path("status").asText()).isEqualTo("DELIVERY_NOT_SENT");
+        assertThat(created.path("delivery").path("reasonCode").asText()).isEqualTo(
+                savedStatus == AgentStatus.OFFLINE ? "RECEIVER_OFFLINE" : "CONNECTION_UNAVAILABLE");
+        long taskId = created.path("taskId").asLong();
+        assertThat(tasks.findById(taskId).orElseThrow().getDeliveredAt()).isNull();
+        assertThat(taskEvents.findByTaskIdOrderBySequenceAsc(taskId)).extracting(TaskEvent::getEventType)
+                .containsExactly(TaskEventType.CREATED, TaskEventType.DELIVERY_NOT_SENT);
+
+        // 같은 수신자가 다시 ONLINE을 보고하면 새 작업 생성 없이 기존 미전달 작업을 전송한다.
+        try (var broker = OnlineTestBroker.connect(port, agentB.token(), agentB.id(), agents)) {
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertThat(taskEvents.findByTaskIdOrderBySequenceAsc(taskId)).extracting(TaskEvent::getEventType)
+                            .containsExactly(TaskEventType.CREATED, TaskEventType.DELIVERY_NOT_SENT,
+                                    TaskEventType.ACK_PENDING));
+            assertThat(tasks.findByRequesterAgentIdAndRequestKey(requester.id(), key).orElseThrow().getId())
+                    .isEqualTo(taskId);
+            assertThat(tasks.findById(taskId).orElseThrow().getStatus()).isEqualTo(TaskStatus.PENDING);
+            assertThat(tasks.findById(taskId).orElseThrow().getDeliveredAt()).isNull();
+        }
+    }
+
+    private void assertSameRankingWithOnlineFirstCandidate(JsonNode baseline) throws Exception {
+        JsonNode connected = assertSuccess(post(team.getId(), requester.token(), body(QUESTION, null)));
+        assertThat(connected.path("status")).isEqualTo(baseline.path("status"));
+        assertThat(connected.path("candidates").get(0).path("connectionStatus").asText()).isEqualTo("ONLINE");
+        JsonNode expected = baseline.deepCopy();
+        ((ObjectNode) expected.path("candidates").get(0))
+                .put("connectionStatus", "ONLINE");
+        assertThat(connected.path("candidates")).isEqualTo(expected.path("candidates"));
+    }
+
     private HttpResponse<String> post(Long teamId, String token, String body) throws Exception {
+        return postPath("/api/v1/teams/" + teamId + "/agents/recommendations", token, body);
+    }
+
+    private HttpResponse<String> postPath(String path, String token, String body) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:" + port + "/api/v1/teams/" + teamId + "/agents/recommendations"))
+                .uri(URI.create("http://localhost:" + port + path))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (token != null) {

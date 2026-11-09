@@ -41,12 +41,13 @@ class DevLinkServerIntegrationTest extends AbstractIntegrationTest {
                         "FileDependency");
         assertThat(flyway.info().applied())
                 .extracting(migration -> migration.getVersion().getVersion())
-                .contains("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "13", "14");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14");
         assertThat(flyway.info().pending()).isEmpty();
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("14");
         assertThat(flyway.validateWithResult().validationSuccessful).isTrue();
         List<String> tables = jdbc.queryForList(
                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public'", String.class);
-        assertThat(tables).contains("users", "teams", "team_members", "agents",
+        assertThat(tables).containsExactlyInAnyOrder("users", "teams", "team_members", "agents",
                 "tasks", "task_files", "task_events", "outbox_events", "flyway_schema_history",
                 "user_git_settings", "team_repositories", "repository_commits", "commit_files",
                 "working_files", "file_dependencies", "repository_dependency_graphs");
