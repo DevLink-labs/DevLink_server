@@ -38,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mockingDetails;
 
 class AgentManagementIntegrationTest extends AbstractIntegrationTest {
     @LocalServerPort private int port;
@@ -262,7 +263,9 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
                 if (!resumeInsert.await(15, TimeUnit.SECONDS)) {
                     throw new IllegalStateException("Timed out waiting for the Agent deletion");
                 }
-                return invocation.callRealMethod();
+                // 저장소 프록시를 통한 실제 저장 및 예외 변환 수행
+                return mockingDetails(invocation.getMock()).getMockCreationSettings()
+                        .getDefaultAnswer().answer(invocation);
             }).when(tasks).save(argThat((Task task) -> task != null && fixture.requestKey().equals(task.getRequestKey())));
 
             try (var executor = Executors.newSingleThreadExecutor()) {
