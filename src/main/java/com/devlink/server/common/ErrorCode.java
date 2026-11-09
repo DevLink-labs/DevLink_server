@@ -22,8 +22,9 @@ public enum ErrorCode {
     RECEIVER_OFFLINE(HttpStatus.CONFLICT, "수신 Agent의 브로커에 연결할 수 없습니다."),
     DELIVERY_SERVICE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "작업 전달 서비스를 사용할 수 없습니다."),
     GIT_ROUTING_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "현재 담당 Agent 추천을 처리할 수 없습니다. 잠시 후 다시 요청해주세요."),
-    INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다.");
-
+    INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다."),
+	PAYLOAD_TOO_LARGE(HttpStatus.PAYLOAD_TOO_LARGE,"요청 본문 또는 커밋 개수 제한을 초과했습니다.");
+	
     private final HttpStatus status;
     private final String message;
 
