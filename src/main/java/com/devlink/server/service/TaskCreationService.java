@@ -62,6 +62,9 @@ public class TaskCreationService {
             // 트랜잭션 시작 → Task(PENDING) + TaskEvent(CREATED) 저장 → 커밋
             creation = transaction.execute(tx -> createTask(teamId, agentId, request, taskSummary));
         } catch (DataIntegrityViolationException exception) {
+            if (TaskAgentForeignKeys.isViolatedBy(exception)) {
+                throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+            }
             // 요청 키 유니크 제약 위반만 복구한다. 다른 제약 오류는 중복 요청으로 보지 않는다.
             if (!isRequestKeyConflict(exception)) {
                 throw exception;
