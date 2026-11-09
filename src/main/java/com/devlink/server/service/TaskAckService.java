@@ -36,6 +36,7 @@ import org.springframework.web.socket.WebSocketSession;
 public class TaskAckService {
     private static final Logger log = LoggerFactory.getLogger(TaskAckService.class);
     private final ConcurrentMap<String, PendingAck> pending = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Long, PendingAck> pendingByTask = new ConcurrentHashMap<>();
     private final ConnectionRegistry connections;
     private final ApplicationEventPublisher events;
     private final TaskRepository tasks;
@@ -68,15 +69,56 @@ public class TaskAckService {
     /** 소켓 쓰기 직전에 등록해 즉시 돌아오는 ACK를 놓치지 않고, 실제 전송 시작부터 시간을 잰다. */
     public CompletionStage<TaskAckResult> register(long taskId, String eventId,
             AgentPrincipal receiver, WebSocketSession session) {
+        return register(taskId, eventId, receiver, session, () -> { });
+    }
+
+    CompletionStage<TaskAckResult> register(long taskId, String eventId,
+            AgentPrincipal receiver, WebSocketSession session, Runnable recheckTask) {
         Assert.isTrue(taskId > 0, "taskId must be positive");
         Assert.hasText(eventId, "eventId must not be blank");
         Assert.notNull(receiver, "receiver must not be null");
         Assert.notNull(session, "session must not be null");
-        PendingAck waiting = new PendingAck(taskId, eventId, receiver, session, nanoTime.getAsLong());
-        if (pending.putIfAbsent(eventId, waiting) != null) {
-            throw new IllegalStateException("ACK already registered for event " + eventId);
+        PendingAck waiting = new PendingAck(taskId, eventId, receiver, session);
+        if (!connections.executeIfCurrent(receiver.getName(), session, () -> {
+            if (pendingByTask.putIfAbsent(taskId, waiting) != null) {
+                throw new AckInProgressException();
+            }
+            return true;
+        })) {
+            throw new ConnectionReplacedException();
+        }
+        try {
+            // 작업별 자리를 먼저 확보하되, DB 재확인 시간은 ACK 제한 시간에서 제외한다.
+            recheckTask.run();
+            if (!connections.executeIfCurrent(receiver.getName(), session, () -> {
+                waiting.startedAt = nanoTime.getAsLong();
+                if (pending.putIfAbsent(eventId, waiting) != null) {
+                    throw new IllegalStateException("ACK already registered for event " + eventId);
+                }
+                return true;
+            })) {
+                throw new ConnectionReplacedException();
+            }
+        } catch (RuntimeException exception) {
+            release(waiting, Status.SEND_FAILED);
+            throw exception;
         }
         return waiting.result.minimalCompletionStage();
+    }
+
+    void finishPreviousAttempt(long taskId, WebSocketSession session) {
+        PendingAck waiting = pendingByTask.get(taskId);
+        if (waiting != null && waiting.session != session
+                && !connections.isCurrentConnection(waiting.receiver.getName(), waiting.session)) {
+            // 이전 연결의 종료 콜백이 늦어도 새 연결에서 전송할 수 있게 정리한다.
+            finish(waiting, Status.CONNECTION_CLOSED);
+            waiting.result.join();
+        }
+    }
+
+    boolean isAwaitingAck(long taskId, String eventId) {
+        PendingAck waiting = pending.get(eventId);
+        return waiting != null && waiting.taskId == taskId;
     }
 
     /** 다른 Agent·작업·이전 연결이 보낸 ACK는 올바른 대기에 영향을 주지 않고 무시한다. */
@@ -147,13 +189,20 @@ public class TaskAckService {
             log.error("Failed to record ACK result: taskId={}, eventId={}, status={}",
                     waiting.taskId, waiting.eventId, status, exception);
         }
-        var result = new TaskAckResult(waiting.taskId, waiting.eventId, waiting.session.getId(), status);
-        waiting.result.complete(result);
+        var result = release(waiting, status);
         try {
             events.publishEvent(result);
         } catch (RuntimeException exception) {
             log.error("Failed to publish ACK result for event {}", waiting.eventId, exception);
         }
+    }
+
+    private TaskAckResult release(PendingAck waiting, Status status) {
+        // ACK 이력 커밋이 끝날 때까지 같은 작업에 새 전송을 등록하지 못하게 한다.
+        pendingByTask.remove(waiting.taskId, waiting);
+        var result = new TaskAckResult(waiting.taskId, waiting.eventId, waiting.session.getId(), status);
+        waiting.result.complete(result);
+        return result;
     }
 
     private void saveAckResult(PendingAck waiting, Status status) {
@@ -177,21 +226,23 @@ public class TaskAckService {
         });
     }
 
+    static final class AckInProgressException extends IllegalStateException { }
+
+    static final class ConnectionReplacedException extends IllegalStateException { }
+
     private static final class PendingAck {
         private final long taskId;
         private final String eventId;
         private final AgentPrincipal receiver;
         private final WebSocketSession session;
-        private final long startedAt;
+        private long startedAt;
         private final CompletableFuture<TaskAckResult> result = new CompletableFuture<>();
 
-        private PendingAck(long taskId, String eventId, AgentPrincipal receiver,
-                WebSocketSession session, long startedAt) {
+        private PendingAck(long taskId, String eventId, AgentPrincipal receiver, WebSocketSession session) {
             this.taskId = taskId;
             this.eventId = eventId;
             this.receiver = receiver;
             this.session = session;
-            this.startedAt = startedAt;
         }
     }
 }

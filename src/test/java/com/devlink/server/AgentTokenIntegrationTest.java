@@ -120,7 +120,7 @@ class AgentTokenIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void offlineReceiverReturns409WithoutSavingTaskOrCreatedEvent() throws Exception {
+    void offlineReceiverReturns201AndSavesPendingTask() throws Exception {
         try (var owner = new Browser()) {
             owner.signupAndLogin();
             long teamId = owner.createTeam();
@@ -128,14 +128,15 @@ class AgentTokenIntegrationTest extends AbstractIntegrationTest {
             long receiverId = owner.createAgent(teamId);
             String token = owner.issueToken(requesterId);
             String key = UUID.randomUUID().toString();
-            long tasksBefore = tasks.count();
-            long eventsBefore = taskEvents.count();
-            assertError(machine("POST", "/api/v1/tasks/" + teamId, Map.of(
-                    "requestKey", key, "receiverAgentId", receiverId, "prompt", "Offline must not be stored"), token),
-                    409, "RECEIVER_OFFLINE");
-            assertThat(tasks.findByRequesterAgentIdAndRequestKey(requesterId, key)).isEmpty();
-            assertThat(tasks.count()).isEqualTo(tasksBefore);
-            assertThat(taskEvents.count()).isEqualTo(eventsBefore);
+            var response = machine("POST", "/api/v1/tasks/" + teamId, Map.of(
+                    "requestKey", key, "receiverAgentId", receiverId, "prompt", "Offline task"), token);
+            assertSuccess(response, 201);
+            var task = tasks.findByRequesterAgentIdAndRequestKey(requesterId, key).orElseThrow();
+            assertThat(task.getStatus()).isEqualTo(TaskStatus.PENDING);
+            assertThat(task.getDeliveredAt()).isNull();
+            assertThat(taskEvents.findByTaskIdOrderBySequenceAsc(task.getId()))
+                    .extracting(event -> event.getEventType().name())
+                    .containsExactly("CREATED", "DELIVERY_NOT_SENT");
         }
     }
 

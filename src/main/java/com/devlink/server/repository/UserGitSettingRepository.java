@@ -5,7 +5,7 @@ import com.devlink.server.domain.gitsetting.UserGitSetting;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface UserGitSettingRepository extends JpaRepository<UserGitSetting, Long> {
-    Optional<UserGitSetting> findByGitEmail(String gitEmail);
+    Optional<UserGitSetting> findByGitEmailHash(String gitEmailHash);
 
-    boolean existsByGitEmailAndUserIdNot(String gitEmail, Long userId);
+    boolean existsByGitEmailHashAndUserIdNot(String gitEmailHash, Long userId);
 }
