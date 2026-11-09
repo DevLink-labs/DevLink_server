@@ -79,7 +79,8 @@ public class SecurityConfig {
                 // 목록 GET의 Authorization 헤더가 있으면 Agent 인증 우선 적용
                 .requestMatchers(request -> agentList.matches(request)
                         && request.getHeader(HttpHeaders.AUTHORIZATION) != null)
-                .requestMatchers("/api/v1/agents/me", "/api/v1/agents/me/task-messages")
+                .requestMatchers("/api/v1/agents/me", "/api/v1/agents/me/task-messages",
+                        "/api/v1/agents/me/git-identity", "/api/v1/agents/me/git-identity/verify")
                 .requestMatchers("/api/v1/tasks", "/api/v1/tasks/**")
         		.requestMatchers(
         				HttpMethod.GET,
@@ -130,7 +131,7 @@ public class SecurityConfig {
                                 "/api/v1/auth/signup", "/api/v1/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf",
                                 "/api/v1/health", "/actuator/health").permitAll()
-                        .requestMatchers("/api/v1/auth/users/me").hasRole("USER")
+                        .requestMatchers("/api/v1/auth/users/me", "/api/v1/auth/users/me/git-identity").hasRole("USER")
                         .requestMatchers("/api/v1/teams", "/api/v1/teams/**", "/api/v1/agents/**")
                                 .hasRole("USER")
                         .requestMatchers("/api/**").authenticated()

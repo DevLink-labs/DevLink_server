@@ -35,7 +35,7 @@ public class AgentService {
     public AgentResponse create(Long userId, Long teamId, CreateAgentRequest request) {
         authorization.requireTeamMember(userId, teamId);
         Agent agent = Agent.create(teamId, userId, request.name(), request.roleDescription(),
-                request.toolType(), request.projectName());
+                request.toolType(), request.projectName(), request.part(), normalizeRoles(request.roles()));
         return saveAgent(agent);
     }
 
@@ -80,6 +80,7 @@ public class AgentService {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED);
         }
         agent.updateProfile(request.name(), request.roleDescription(), request.projectName());
+        agent.updateRoutingMetadata(request.part(), normalizeRoles(request.roles()));
         return saveAgent(agent);
     }
 
@@ -106,6 +107,17 @@ public class AgentService {
             throw new BusinessException(ErrorCode.ACCESS_DENIED);
         }
         return agent;
+    }
+
+    private List<String> normalizeRoles(List<String> roles) {
+        if (roles == null) {
+            return null;
+        }
+        if (roles.size() > 10 || roles.stream()
+                .anyMatch(role -> role == null || role.isBlank() || role.length() > 64)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+        }
+        return roles.stream().map(String::trim).distinct().toList();
     }
 
     private void requireUser(Long userId) {
