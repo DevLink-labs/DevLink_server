@@ -11,6 +11,8 @@ import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.TaskRepository;
 import com.devlink.server.realtime.AgentCredentialsChangedEvent;
 import org.hibernate.exception.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -18,6 +20,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AgentService {
+    private static final Logger log = LoggerFactory.getLogger(AgentService.class);
+
     private final AgentRepository agents;
     private final TeamAuthorizationService authorization;
     private final TaskRepository tasks;
@@ -46,6 +50,8 @@ public class AgentService {
             for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
                 if (cause instanceof ConstraintViolationException violation
                         && "uk_agents_team_name_tool_type".equals(violation.getConstraintName())) {
+                    log.debug("Agent save rejected: reason=duplicate_agent, teamId={}, userId={}, agentId={}",
+                            agent.getTeamId(), agent.getOwnerUserId(), agent.getId());
                     throw new BusinessException(ErrorCode.AGENT_ALREADY_EXISTS);
                 }
             }
@@ -67,7 +73,10 @@ public class AgentService {
         requireUser(userId);
         requireAgentId(agentId);
         Agent agent = agents.findById(agentId)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+                .orElseThrow(() -> {
+                    log.debug("Agent lookup failed: reason=agent_not_found, userId={}, agentId={}", userId, agentId);
+                    return new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+                });
         authorization.requireTeamMember(userId, agent.getTeamId());
         return AgentResponse.from(agent);
     }
@@ -77,6 +86,7 @@ public class AgentService {
         Agent agent = requireOwnedAgentForUpdate(userId, agentId);
         if ((request.name() != null && request.name().isBlank())
                 || (request.projectName() != null && request.projectName().isBlank())) {
+            log.debug("Agent update rejected: reason=blank_profile_field, userId={}, agentId={}", userId, agentId);
             throw new BusinessException(ErrorCode.VALIDATION_FAILED);
         }
         agent.updateProfile(request.name(), request.roleDescription(), request.projectName());
@@ -89,6 +99,7 @@ public class AgentService {
         Agent agent = requireOwnedAgentForUpdate(userId, agentId);
         // 기존 작업 조회에서 참조하는 Agent 정보 보존
         if (tasks.existsByRequesterAgentIdOrReceiverAgentId(agentId, agentId)) {
+            log.debug("Agent deletion rejected: reason=task_history_exists, userId={}, agentId={}", userId, agentId);
             throw new BusinessException(ErrorCode.AGENT_HAS_TASKS);
         }
         agents.delete(agent);
@@ -101,9 +112,14 @@ public class AgentService {
         requireUser(userId);
         requireAgentId(agentId);
         Agent agent = agents.findByIdForUpdate(agentId)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+                .orElseThrow(() -> {
+                    log.debug("Agent change rejected: reason=agent_not_found, userId={}, agentId={}", userId, agentId);
+                    return new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+                });
         authorization.requireTeamMember(userId, agent.getTeamId());
         if (!agent.getOwnerUserId().equals(userId)) {
+            log.debug("Agent change rejected: reason=owner_required, userId={}, teamId={}, agentId={}",
+                    userId, agent.getTeamId(), agentId);
             throw new BusinessException(ErrorCode.ACCESS_DENIED);
         }
         return agent;
