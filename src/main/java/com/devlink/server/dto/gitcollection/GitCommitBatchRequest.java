@@ -83,8 +83,4 @@ public record GitCommitBatchRequest(
 		
 		
 	}
-	
-	
-	
-	
 }
