@@ -1,11 +1,15 @@
 package com.devlink.server.service;
 
 import org.springframework.stereotype.Service;
+import com.devlink.server.domain.UserPrincipal;
+import com.devlink.server.dto.task.WebTaskListRequest;
+import com.devlink.server.dto.task.TaskEventListResponse;
 import com.devlink.server.dto.task.TaskFileResponse;
 import com.devlink.server.common.BusinessException;
 import com.devlink.server.dto.task.TaskListRequest;
 import com.devlink.server.common.ErrorCode;
 import com.devlink.server.repository.TeamRepository;
+import com.devlink.server.domain.taskevent.TaskEvent;
 import com.devlink.server.repository.TeamMemberRepository;
 import lombok.RequiredArgsConstructor;
 import com.devlink.server.repository.AgentRepository;
@@ -25,12 +29,16 @@ import java.util.HashMap;
 import java.util.HashSet;
 import com.devlink.server.dto.task.TaskListResponse;
 import java.util.ArrayList;
+import java.util.Collections;
+import com.devlink.server.dto.task.WebTaskDetailResponse;
 import org.springframework.transaction.annotation.Transactional;
 import com.devlink.server.repository.TaskFileRepository;
 import com.devlink.server.repository.TaskEventRepository;
 import com.devlink.server.dto.task.TaskEventResponse;
 import com.devlink.server.domain.task.TaskStatus;
 import com.devlink.server.dto.task.TaskDetailResponse;
+import com.devlink.server.dto.task.TaskEventListRequest;
+import com.devlink.server.dto.task.WebTaskHistoryResponse;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -46,6 +54,180 @@ public class TaskQueryService {
 	private final TaskRepository taskRepository;
 	private final TaskFileRepository taskFileRepository;
 	private final TaskEventRepository taskEventRepository;
+	private final TeamAuthorizationService teamAuthorizationService;
+	
+	@Transactional(readOnly = true)
+	public WebTaskHistoryResponse getWebTaskHistory(
+			Long teamId,
+			Long taskId,
+			UserPrincipal user,
+			TaskEventListRequest request) {
+		if(user == null) {
+			throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
+		}
+		teamAuthorizationService.requireTeamMember(user.userId(), teamId);
+		
+		Task task = findTask(taskId);
+		
+		if(!task.getTeamId().equals(teamId)) {
+			throw new BusinessException(ErrorCode.ACCESS_DENIED);
+		}
+		
+		validateWebTaskAccess(task, user.userId());
+		
+		List<TaskEventType> eventTypes = List.of(
+				TaskEventType.CREATED,
+				TaskEventType.STATUS_CHANGED,
+				TaskEventType.PROGRESS,
+				TaskEventType.QUESTION,
+				TaskEventType.ANSWER);
+		
+		int limit = request.limit();
+		Pageable pageable = PageRequest.of(0, limit+1);
+		
+		List<TaskEvent> fetched;
+		
+		if(request.beforeSequence() == null) {
+			fetched = taskEventRepository.findLatestEventsByTypes(taskId, eventTypes, pageable);
+		}else {
+			Long beforeSequence;
+			try {
+				beforeSequence = Long.valueOf(request.beforeSequence());
+			}catch(NumberFormatException e) {
+				throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+			}
+			fetched = taskEventRepository.findEventsBeforeByTypes(taskId, eventTypes, beforeSequence, pageable);
+		}
+		boolean hasNext = fetched.size()>limit;
+		
+		List<TaskEvent> selected = new ArrayList<>(
+				fetched.subList(0, Math.min(limit, fetched.size())));
+		
+		Collections.reverse(selected);
+		
+		String nextBeforeSequence = hasNext ? selected.getFirst().getSequence().toString():null;
+		
+		TaskStatus status = task.getStatus();
+		
+		String resultText = status == TaskStatus.COMPLETED?task.getResultText():null;
+		
+		String failureReason = status == TaskStatus.FAILED?task.getResultText():null;
+		
+		String rejectionReason = status == TaskStatus.REJECTED?task.getResultText():null;
+		
+		boolean partiallyModified = status == TaskStatus.FAILED && task.isPartiallyModified();
+
+		return new WebTaskHistoryResponse(
+				task.getId(),
+				task.getPrompt(),
+				resultText,
+				failureReason,
+				rejectionReason,
+				partiallyModified,
+				findTaskFiles(taskId),
+				toEventResponses(selected),
+				nextBeforeSequence,
+				hasNext);
+	}
+	
+	@Transactional(readOnly = true)
+	public WebTaskDetailResponse getWebTask(
+			Long teamId,
+			Long taskId,
+			UserPrincipal user) {
+		if(user == null) {
+			throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
+		}
+		//로그인 사용자가 요청한 팀의 현재 회원인지 확인
+		teamAuthorizationService.requireTeamMember(user.userId(), teamId);
+		
+		Task task = findTask(taskId);
+		
+		//경로의 팀과 작업이 속한 팀이 같은지 확인
+		if(!task.getTeamId().equals(teamId)) {
+			throw new BusinessException(ErrorCode.ACCESS_DENIED);
+		}
+		
+		validateWebTaskAccess(task, user.userId());
+		
+		Map<Long,Agent> agentsById = findAgents(List.of(task));
+		
+		Agent requesterAgent = agentsById.get(task.getRequesterAgentId());
+		Agent receiverAgent = agentsById.get(task.getReceiverAgentId());
+		
+		if(requesterAgent == null || receiverAgent == null) {
+			throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
+		}
+		
+		String teamName = teamRepository.findById(task.getTeamId())
+				.orElseThrow(() -> 
+				new BusinessException(ErrorCode.RESOURCE_NOT_FOUND))
+				.getName();
+		
+		LocalDateTime lastActivityAt = findLastActivityTimes(List.of(task))
+				.get(task.getId());
+		
+		return new WebTaskDetailResponse(
+				task.getId(),
+				task.getTeamId(),
+				teamName,
+				task.getTaskSummary(),
+				new TaskAgentResponse(
+						requesterAgent.getId(),
+						requesterAgent.getName())
+				,new TaskAgentResponse(
+						receiverAgent.getId(),
+						receiverAgent.getName()),
+				task.getStatus(),
+				task.getCreatedAt(),
+				task.getStartedAt(),
+				task.getCompletedAt(),
+				lastActivityAt
+				); 
+	}
+	
+	private void validateWebTaskAccess(Task task, Long userId) {
+		boolean participant = agentRepository
+				.findUserAgentInTeam(task.getTeamId(), userId)
+				.stream()
+				.anyMatch(agent ->
+				agent.getId().equals(task.getRequesterAgentId())
+				|| agent.getId().equals(task.getReceiverAgentId()));
+		
+		if(!participant) {
+			throw new BusinessException(ErrorCode.ACCESS_DENIED);
+		}
+	}
+	
+	@Transactional(readOnly = true)
+	public TaskListResponse getWebTasks(
+		Long teamId,
+		UserPrincipal user,
+		WebTaskListRequest request) {
+		
+		if(user == null) {
+			throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
+		}
+		
+		teamAuthorizationService.requireTeamMember(user.userId(), teamId);
+		Pageable pageable = PageRequest.of(request.page(), request.size());
+		
+		List<Long> agentIds = agentRepository
+				.findUserAgentInTeam(teamId,user.userId())
+				.stream()
+				.map(Agent::getId)
+				.toList();
+		
+		Page<Task> taskPage;
+		
+		if(agentIds.isEmpty()) {
+			taskPage = Page.empty(pageable);
+		}else {
+			taskPage = taskRepository.findAgentTasks(teamId, agentIds, "all", request.status(), pageable);
+		}
+		
+		return toListResponse(taskPage);
+	}
 	
 	@Transactional(readOnly = true)
 	public TaskListResponse getTasks(
@@ -219,10 +401,58 @@ public class TaskQueryService {
 	            .toList();
 	}
 	
+	@Transactional(readOnly = true)
+	public TaskEventListResponse getTaskEvents(
+			Long taskId,
+			AgentPrincipal agent,
+			TaskEventListRequest request) {
+		
+		validateAgent(agent);
+		
+		Task task = findTask(taskId);
+		validateTeam(task.getTeamId(),agent);
+		
+		int limit = request.limit();
+		Pageable pageable = PageRequest.of(0, limit+1);
+		
+		List<TaskEvent> fetched;
+		
+		if(request.beforeSequence() == null) {
+			fetched = taskEventRepository.findLatestEvents(taskId, pageable);
+		}else {
+			Long beforeSequence;
+			try {
+				beforeSequence = Long.valueOf(request.beforeSequence());
+			}catch(NumberFormatException e) {
+				throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+			}
+			fetched = taskEventRepository.findEventsBefore(taskId, beforeSequence, pageable);
+		}
+		boolean hasNext = fetched.size()>limit;
+		
+		List<TaskEvent> selected = new ArrayList<>(
+				fetched.subList(0, Math.min(limit, fetched.size())));
+		
+		Collections.reverse(selected);
+		
+		String nextBeforeSequence = hasNext?selected.getFirst().getSequence().toString():null;
+
+		return new TaskEventListResponse(
+				taskId,
+				toEventResponses(selected),
+				nextBeforeSequence,
+				hasNext);
+	}
+	
 	private List<TaskEventResponse> findTaskEvents(Long taskId) {
 		
 		var events = taskEventRepository.findByTaskIdOrderBySequenceAsc(taskId);
 		
+		return toEventResponses(events);
+		
+	}
+	
+	private List<TaskEventResponse> toEventResponses(List<TaskEvent> events){
 		if(events.isEmpty()) {
 			return List.of();
 		}

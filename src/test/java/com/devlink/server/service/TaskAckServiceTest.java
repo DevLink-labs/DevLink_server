@@ -166,6 +166,32 @@ class TaskAckServiceTest {
     }
 
     @Test
+    void anotherAttemptCannotRegisterUntilTheAckCommits() throws Exception {
+        WebSocketSession session = session("first");
+        var committing = new CountDownLatch(1);
+        var finishCommit = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            committing.countDown();
+            assertThat(finishCommit.await(5, TimeUnit.SECONDS)).isTrue();
+            return null;
+        }).when(transactions).commit(any());
+        acknowledgements.register(7, "first", receiver, session);
+
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var ack = executor.submit(() -> acknowledgements.acknowledge(receiver, session, 7, "first"));
+            try {
+                assertThat(committing.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThatIllegalStateException().isThrownBy(() ->
+                        acknowledgements.register(7, "second", receiver, session));
+            } finally {
+                finishCommit.countDown();
+            }
+            assertThat(ack.get(5, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(acknowledgements.register(7, "second", receiver, session).toCompletableFuture()).isNotDone();
+    }
+
+    @Test
     void listenerFailureDoesNotBlockOtherWaitsFromFinishing() {
         WebSocketSession session = session("first");
         doThrow(new IllegalStateException("Result consumer failed"))
