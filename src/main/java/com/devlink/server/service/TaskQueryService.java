@@ -1,6 +1,11 @@
 package com.devlink.server.service;
 
 import org.springframework.stereotype.Service;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.function.Function;
 import com.devlink.server.domain.UserPrincipal;
 import com.devlink.server.dto.task.WebTaskListRequest;
 import com.devlink.server.dto.task.TaskEventListResponse;
@@ -55,6 +60,7 @@ public class TaskQueryService {
 	private final TaskFileRepository taskFileRepository;
 	private final TaskEventRepository taskEventRepository;
 	private final TeamAuthorizationService teamAuthorizationService;
+	private final ObjectMapper objectMapper;
 	
 	@Transactional(readOnly = true)
 	public WebTaskHistoryResponse getWebTaskHistory(
@@ -171,7 +177,7 @@ public class TaskQueryService {
 				task.getId(),
 				task.getTeamId(),
 				teamName,
-				task.getTaskSummary(),
+				resolveWebTaskSummary(task),
 				new TaskAgentResponse(
 						requesterAgent.getId(),
 						requesterAgent.getName())
@@ -184,6 +190,38 @@ public class TaskQueryService {
 				task.getCompletedAt(),
 				lastActivityAt
 				); 
+	}
+	
+	private String resolveWebTaskSummary(Task task) {
+		String summary = task.getTaskSummary();
+		
+		//저장된 요약 우선 사용
+		if(summary != null && !summary.isBlank()) {
+			return summary;
+		}
+		String prompt = task.getPrompt();
+		
+		if(prompt == null || prompt.isBlank()) {
+			return null;
+		}
+		
+		try {
+			JsonNode root = objectMapper.reader()
+					.with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+					.readTree(prompt);
+			if(root == null || !root.isObject()) {
+				return null;
+			}
+			JsonNode title = root.get("title");
+			if(title == null || !title.isTextual()) {
+				return null;
+			}
+			String extractedTitle = title.textValue().strip();
+			return extractedTitle.isEmpty()?null : extractedTitle;
+		}catch(JsonProcessingException e) {
+			//일반 문자열 또는 잘못된 JSON이면 제목 추출 없이 반환.
+			return null;
+		}
 	}
 	
 	private void validateWebTaskAccess(Task task, Long userId) {
@@ -226,7 +264,7 @@ public class TaskQueryService {
 			taskPage = taskRepository.findAgentTasks(teamId, agentIds, "all", request.status(), pageable);
 		}
 		
-		return toListResponse(taskPage);
+		return toListResponse(taskPage, this::resolveWebTaskSummary);
 	}
 	
 	@Transactional(readOnly = true)
@@ -245,7 +283,7 @@ public class TaskQueryService {
 	            request
 	    );
 
-	    return toListResponse(taskPage);
+	    return toListResponse(taskPage,Task::getTaskSummary);
 	}
 	
 	@Transactional(readOnly = true)
@@ -510,7 +548,8 @@ public class TaskQueryService {
 	            ));
 	}
 	
-	private TaskListResponse toListResponse(Page<Task> taskPage) {
+	private TaskListResponse toListResponse(Page<Task> taskPage,
+			Function<Task,String> summaryResolver) {
 	    List<Task> tasks = taskPage.getContent();
 
 	    Map<Long, Agent> agentsById = findAgents(tasks);
@@ -537,7 +576,8 @@ public class TaskQueryService {
 	                task,
 	                requesterAgent,
 	                receiverAgent,
-	                lastActivityTimes.get((task.getId()))
+	                lastActivityTimes.get(task.getId()),
+	                summaryResolver.apply(task)
 	        ));
 	    }
 
@@ -572,10 +612,11 @@ public class TaskQueryService {
 	private TaskListItemResponse toListItem(Task task,
 			Agent requesterAgent,
 			Agent receiverAgent,
-			LocalDateTime lastActivityAt) {
+			LocalDateTime lastActivityAt,
+			String taskSummary) {
 		return new TaskListItemResponse(task.getId(),
 				task.getTeamId(),
-				task.getTaskSummary(),
+				taskSummary,
 				new TaskAgentResponse(
 						requesterAgent.getId(),requesterAgent.getName()),
 				new TaskAgentResponse(

@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.stream.Stream;
 import com.devlink.server.common.AgentTokenHash;
 import com.devlink.server.domain.agent.Agent;
 import com.devlink.server.domain.agent.ToolType;
@@ -45,6 +46,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -82,6 +85,54 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
     private TestAgent otherTeamAgent;
     private Map<String, Long> taskIds;
     private int taskSequence;
+
+    @ParameterizedTest
+    @MethodSource("webSummaryCases")
+    void resolvesWebSummaryConsistentlyWithoutChangingStoredDataOrAgentResponses(
+            String storedSummary, String prompt, String expectedSummary) throws Exception {
+        Long taskId = taskIds.get("sentPending");
+        jdbc.update("update tasks set task_summary = ?, prompt = ? where id = ?",
+                storedSummary, prompt, taskId);
+        Map<String, Object> before = jdbc.queryForMap("select * from tasks where id = ?", taskId);
+
+        try (HttpClient client = loggedInClient(owner)) {
+            JsonNode webList = assertSuccess(webGet(client, team.getId(), ""));
+            JsonNode webDetail = assertSuccess(webDetailGet(client, team.getId(), taskId));
+            assertNullableText(findItem(webList, "sentPending").path("taskSummary"), expectedSummary);
+            assertNullableText(webDetail.path("taskSummary"), expectedSummary);
+            JsonNode history = assertSuccess(webHistoryGet(client, team.getId(), taskId, ""));
+            assertThat(history.path("prompt").asText()).isEqualTo(prompt);
+        }
+
+        JsonNode agentList = assertSuccess(getTasks(callerAgent.token(), ""));
+        JsonNode agentDetail = assertSuccess(get(detailPath(taskId), callerAgent.token()));
+        assertNullableText(findItem(agentList, "sentPending").path("taskSummary"), storedSummary);
+        assertNullableText(agentDetail.path("taskSummary"), storedSummary);
+        assertThat(jdbc.queryForMap("select * from tasks where id = ?", taskId)).isEqualTo(before);
+        assertThat(taskEvents.findByTaskIdOrderBySequenceAsc(taskId)).isEmpty();
+    }
+
+    private static Stream<Arguments> webSummaryCases() {
+        return Stream.of(
+                Arguments.of("저장된 요약", "{\"title\":\"추출한 제목\"}", "저장된 요약"),
+                Arguments.of("저장된 요약", "잘못된 JSON {", "저장된 요약"),
+                Arguments.of(null, "{\"title\":\"  로그인 오류 확인 😀  \",\"description\":\"요청 본문\"}", "로그인 오류 확인 😀"),
+                Arguments.of(" \t", "{\"title\":\"추출한 제목\"}", "추출한 제목"),
+                Arguments.of(null, "일반 요청 본문", null),
+                Arguments.of(null, "", null),
+                Arguments.of(null, " \t", null),
+                Arguments.of(null, "{\"title\":", null),
+                Arguments.of(null, "{\"description\":\"본문만 존재\"}", null),
+                Arguments.of(null, "{\"title\":null}", null),
+                Arguments.of(null, "{\"title\":123}", null),
+                Arguments.of(null, "{\"title\":true}", null),
+                Arguments.of(null, "{\"title\":{\"text\":\"제목\"}}", null),
+                Arguments.of(null, "{\"title\":[\"제목\"]}", null),
+                Arguments.of(null, "[{\"title\":\"제목\"}]", null),
+                Arguments.of(null, "null", null),
+                Arguments.of(null, "{\"title\":\"제목\"} {}", null),
+                Arguments.of(null, "{\"title\":\"  \\t  \"}", null));
+    }
 
     @Test
     void webHistoryFiltersBeforePaginationAndKeepsCursorStableAfterNewEvents() throws Exception {
