@@ -27,7 +27,7 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
             """, nativeQuery = true)
     List<OutboxEvent> findNextTaskNotification(@Param("now") Instant now);
 
-    // 점유 불가 상태인 선행 행도 같은 쌍을 막는다. 파트 정보가 없는 V11 행은 팀 단위로 순서를 지킨다.
+    // 점유 불가 상태인 선행 행도 같은 쌍을 막는다. 파트 정보가 없는 기존 행은 팀 단위로 순서를 지킨다.
     @Query(value = """
             SELECT candidate.* FROM outbox_events candidate
             WHERE candidate.destination = 'team-context'

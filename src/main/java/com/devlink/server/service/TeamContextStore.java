@@ -164,7 +164,7 @@ public class TeamContextStore {
 
     private AgentPart part(JsonNode payload, String field, Long agentId) {
         if (!payload.has(field)) {
-            // V11 Outbox 행은 파트 스냅샷이 없다.
+            // 이전 형식의 Outbox 행은 파트 스냅샷이 없다.
             return agents.findById(agentId).map(Agent::getPart)
                     .orElseThrow(() -> new InvalidTeamContextEventException("agent " + agentId + " missing"));
         }

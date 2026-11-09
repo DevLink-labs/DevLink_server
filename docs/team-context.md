@@ -26,7 +26,7 @@
 
 ## 데이터
 
-`team_part_contexts` (V11): `team_id`, 정규화된 `part_a <= part_b`, `version`, JSONB `common`·`changed`·`issues`, 반영한 마지막 `last_event_id`, `model`, `prompt_version`, `created_at`. 이전 버전은 지우지 않는다.
+`team_part_contexts`는 V15에서 만든다. `team_id`, 정규화된 `part_a <= part_b`, `version`, JSONB `common`·`changed`·`issues`, 반영한 마지막 `last_event_id`, `model`, `prompt_version`, `created_at`을 저장하고 이전 버전을 보관한다. V16은 Outbox 순번과 이벤트 중복 반영 방지 제약을 추가한다.
 
 요약 항목의 `evidence`는 `"taskId:eventId"` 좌표다. Agent가 요약을 의심하면 `get_task_result`로 원문을 읽는다. 서버 요약은 참고 자료이지 권위가 아니며 작업 상태를 바꾸지 않는다.
 

@@ -7,10 +7,14 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
+import com.devlink.server.domain.agent.AgentPart;
 import com.devlink.server.domain.agent.AgentStatus;
 import com.devlink.server.domain.task.Task;
 import com.devlink.server.domain.teammember.MemberRole;
@@ -250,6 +254,177 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
         }
     }
 
+    @Test
+    void routingMetadataIsNormalizedAndReturnedBySessionAndAgentReadRoutes() throws Exception {
+        try (var owner = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            Map<String, Object> body = agentBody();
+            body.put("part", "BACKEND");
+            body.put("roles", List.of(" api ", "API", "api", " 인증 ", "api"));
+
+            var created = owner.mutate("POST", "/api/v1/agents/teams/" + teamId, body);
+
+            assertSuccess(created, 201);
+            JsonNode profile = created.body().path("data");
+            long agentId = profile.path("agentId").asLong();
+            List<String> roles = List.of("api", "API", "인증");
+            assertRoutingMetadata(profile, "BACKEND", roles);
+            var stored = agents.findById(agentId).orElseThrow();
+            assertThat(stored.getPart()).isEqualTo(AgentPart.BACKEND);
+            assertThat(stored.getRoles()).containsExactlyElementsOf(roles);
+
+            var detail = owner.get("/api/v1/agents/" + agentId);
+            assertSuccess(detail, 200);
+            assertRoutingMetadata(detail.body().path("data"), "BACKEND", roles);
+
+            String listPath = "/api/v1/agents/teams/" + teamId + "?ownedByMe=true";
+            var sessionList = owner.get(listPath);
+            assertSuccess(sessionList, 200);
+            assertThat(sessionList.body().path("data").size()).isEqualTo(1);
+            assertRoutingMetadata(sessionList.body().path("data").get(0), "BACKEND", roles);
+
+            var issued = owner.mutate("POST", "/api/v1/agents/" + agentId + "/token", null);
+            assertSuccess(issued, 201);
+            String token = issued.body().path("data").path("token").asText();
+
+            var agentList = agentGet(listPath, token);
+            assertSuccess(agentList, 200);
+            assertThat(agentList.body().path("data")).isEqualTo(sessionList.body().path("data"));
+
+            var me = agentGet("/api/v1/agents/me", token);
+            assertSuccess(me, 200);
+            assertThat(me.body().path("data").path("agentId").asLong()).isEqualTo(agentId);
+            assertRoutingMetadata(me.body().path("data"), "BACKEND", roles);
+        }
+    }
+
+    @Test
+    void omittedAndNullRegistrationMetadataUseBackwardCompatibleDefaults() throws Exception {
+        try (var owner = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            Map<String, Object> omitted = registrationField("name", "Omitted metadata");
+            Map<String, Object> explicitNull = registrationField("name", "Null metadata");
+            explicitNull.put("part", null);
+            explicitNull.put("roles", null);
+
+            for (Map<String, Object> body : List.of(omitted, explicitNull)) {
+                var response = owner.mutate("POST", "/api/v1/agents/teams/" + teamId, body);
+
+                assertSuccess(response, 201);
+                JsonNode profile = response.body().path("data");
+                assertRoutingMetadata(profile, "OTHER", List.of());
+                var stored = agents.findById(profile.path("agentId").asLong()).orElseThrow();
+                assertThat(stored.getPart()).isEqualTo(AgentPart.OTHER);
+                assertThat(stored.getRoles()).isEmpty();
+            }
+        }
+    }
+
+    @Test
+    void patchOmissionAndNullPreserveMetadataWhileEmptyRolesClearOnlyTags() throws Exception {
+        try (var owner = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            Map<String, Object> body = agentBody();
+            body.put("part", "FRONTEND");
+            body.put("roles", List.of("React", "UI"));
+            var created = owner.mutate("POST", "/api/v1/agents/teams/" + teamId, body);
+            assertSuccess(created, 201);
+            long agentId = created.body().path("data").path("agentId").asLong();
+            String path = "/api/v1/agents/" + agentId;
+
+            var omitted = owner.mutate("PATCH", path, Map.of());
+            assertSuccess(omitted, 200);
+            assertRoutingMetadata(omitted.body().path("data"), "FRONTEND", List.of("React", "UI"));
+
+            Map<String, Object> nullBody = new LinkedHashMap<>();
+            nullBody.put("part", null);
+            nullBody.put("roles", null);
+            var explicitNull = owner.mutate("PATCH", path, nullBody);
+            assertSuccess(explicitNull, 200);
+            assertRoutingMetadata(explicitNull.body().path("data"), "FRONTEND", List.of("React", "UI"));
+
+            var cleared = owner.mutate("PATCH", path, Map.of("roles", List.of()));
+            assertSuccess(cleared, 200);
+            assertRoutingMetadata(cleared.body().path("data"), "FRONTEND", List.of());
+            var stored = agents.findById(agentId).orElseThrow();
+            assertThat(stored.getPart()).isEqualTo(AgentPart.FRONTEND);
+            assertThat(stored.getRoles()).isEmpty();
+            assertThat(stored.getRoleDescription()).isEqualTo(body.get("roleDescription"));
+        }
+    }
+
+    @Test
+    void onlyOwnerCanReplaceRoutingMetadataAndUpperLimitsAreAccepted() throws Exception {
+        try (var owner = new Browser(); var teammate = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            long agentId = owner.createAgent(teamId);
+            long teammateId = teammate.signupAndLogin();
+            members.saveAndFlush(TeamMember.create(teamId, teammateId, MemberRole.MEMBER));
+            String path = "/api/v1/agents/" + agentId;
+            Map<String, Object> update = Map.of("part", "INFRA",
+                    "roles", List.of(" deploy ", "deploy", "DEPLOY"));
+
+            assertError(teammate.mutate("PATCH", path, update), 403, "ACCESS_DENIED");
+            var updated = owner.mutate("PATCH", path, update);
+            assertSuccess(updated, 200);
+            assertRoutingMetadata(updated.body().path("data"), "INFRA", List.of("deploy", "DEPLOY"));
+
+            List<String> limitRoles = Stream.iterate(0, index -> index + 1).limit(10)
+                    .map(index -> "a".repeat(63) + index).toList();
+            var limits = owner.mutate("PATCH", path, Map.of("part", "OTHER", "roles", limitRoles));
+            assertSuccess(limits, 200);
+            assertRoutingMetadata(limits.body().path("data"), "OTHER", limitRoles);
+            var stored = agents.findById(agentId).orElseThrow();
+            assertThat(stored.getPart()).isEqualTo(AgentPart.OTHER);
+            assertThat(stored.getRoles()).containsExactlyElementsOf(limitRoles);
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidRoutingMetadataBodies")
+    void invalidMetadataPatchDoesNotChangeExistingProfile(Map<String, Object> invalid) throws Exception {
+        try (var owner = new Browser()) {
+            owner.signupAndLogin();
+            long teamId = owner.createTeam();
+            Map<String, Object> body = agentBody();
+            body.put("part", "BACKEND");
+            body.put("roles", List.of("api"));
+            var created = owner.mutate("POST", "/api/v1/agents/teams/" + teamId, body);
+            assertSuccess(created, 201);
+            long agentId = created.body().path("data").path("agentId").asLong();
+            String originalName = agents.findById(agentId).orElseThrow().getName();
+            Map<String, Object> update = new LinkedHashMap<>(invalid);
+            update.put("name", "Should not be saved");
+
+            assertError(owner.mutate("PATCH", "/api/v1/agents/" + agentId, update),
+                    400, "VALIDATION_FAILED");
+
+            var stored = agents.findById(agentId).orElseThrow();
+            assertThat(stored.getName()).isEqualTo(originalName);
+            assertThat(stored.getPart()).isEqualTo(AgentPart.BACKEND);
+            assertThat(stored.getRoles()).containsExactly("api");
+        }
+    }
+
+    private void assertRoutingMetadata(JsonNode profile, String part, List<String> roles) {
+        assertThat(profile.path("part").asText()).isEqualTo(part);
+        assertThat(profile.path("roles")).isEqualTo(json.valueToTree(roles));
+    }
+
+    private HttpResult agentGet(String path, String token) throws Exception {
+        try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build()) {
+            var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                    .timeout(Duration.ofSeconds(10)).header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + token).GET().build();
+            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            return new HttpResult(response.statusCode(), json.readTree(response.body()));
+        }
+    }
+
     private static Map<String, Object> agentBody() {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("name", "My agent");
@@ -266,13 +441,27 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
     }
 
     private static Stream<Map<String, Object>> invalidAgentBodies() {
-        return Stream.of(
+        return Stream.concat(Stream.of(
                 registrationField("name", " "),
                 registrationField("name", "A".repeat(101)),
                 registrationField("roleDescription", "A".repeat(256)),
                 registrationField("toolType", null),
                 registrationField("toolType", "UNKNOWN_TOOL"),
-                registrationField("projectName", "A".repeat(121)));
+                registrationField("projectName", "A".repeat(121))),
+                invalidRoutingMetadataBodies().map(metadata -> {
+                    Map<String, Object> body = agentBody();
+                    body.putAll(metadata);
+                    return body;
+                }));
+    }
+
+    private static Stream<Map<String, Object>> invalidRoutingMetadataBodies() {
+        return Stream.of(
+                Map.of("part", "UNKNOWN_PART"),
+                Map.of("roles", List.of(" ")),
+                Map.of("roles", Arrays.asList("api", null)),
+                Map.of("roles", List.of("a".repeat(65))),
+                Map.of("roles", Collections.nCopies(11, "api")));
     }
 
     private void assertSuccess(HttpResult response, int status) {

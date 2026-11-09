@@ -13,6 +13,7 @@ public enum ErrorCode {
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "리소스를 찾을 수 없습니다."),
     DUPLICATE_REQUEST(HttpStatus.CONFLICT, "중복 요청입니다."),
     EMAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 가입된 이메일입니다."),
+    GIT_EMAIL_ALREADY_REGISTERED(HttpStatus.CONFLICT, "다른 사용자가 등록한 Git 이메일입니다."),
     AGENT_ALREADY_EXISTS(HttpStatus.CONFLICT, "팀에 같은 이름과 도구 유형의 Agent가 이미 있습니다."),
     AGENT_HAS_TASKS(HttpStatus.CONFLICT, "작업 이력이 있는 Agent는 삭제할 수 없습니다."),
     REQUEST_KEY_CONFLICT(HttpStatus.CONFLICT, "동일 요청 키에 다른 작업 요청이 존재합니다."),
@@ -22,6 +23,8 @@ public enum ErrorCode {
     RECEIVER_OFFLINE(HttpStatus.CONFLICT, "수신 Agent의 브로커에 연결할 수 없습니다."),
     DELIVERY_SERVICE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "작업 전달 서비스를 사용할 수 없습니다."),
     GIT_ROUTING_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "현재 담당 Agent 추천을 처리할 수 없습니다. 잠시 후 다시 요청해주세요."),
+    DEPENDENCY_GRAPH_CONFLICT(HttpStatus.CONFLICT, "저장소 설정 또는 그래프 버전이 바뀌었습니다."),
+    DEPENDENCY_GRAPH_TOO_LARGE(HttpStatus.PAYLOAD_TOO_LARGE, "코드 의존성 요청이 너무 큽니다."),
     INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다.");
 
     private final HttpStatus status;

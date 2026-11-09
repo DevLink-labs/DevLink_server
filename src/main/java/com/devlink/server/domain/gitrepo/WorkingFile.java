@@ -11,7 +11,10 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 // Bounded context: git.
-/** 사용자·저장소별 현재 작업 파일 관측. 빈 파일 목록도 정상 관측으로 보존한다. 만료 시각 계산은 서비스에서 처리한다. */
+/**
+ * 사용자·저장소별 현재 작업 파일 관측. 빈 파일 목록도 정상 관측으로 보존한다. 만료 시각 계산은 서비스에서 처리한다.
+ * branchName은 detached HEAD 관측이면 null이다.
+ */
 @Entity
 @Table(name = "working_files")
 @Getter
@@ -20,7 +23,7 @@ public class WorkingFile {
     @EmbeddedId
     private WorkingFileId id;
 
-    @Column(name = "branch_name", length = 255, nullable = false)
+    @Column(name = "branch_name", length = 255)
     private String branchName;
 
     @JdbcTypeCode(SqlTypes.JSON)
@@ -43,15 +46,14 @@ public class WorkingFile {
         return entity;
     }
 
-    /** 새 관측으로 전체를 교체한다. files가 null이면 빈 배열로 저장한다. */
+    /** 새 관측으로 전체를 교체한다. files가 null이면 빈 배열로, branchName이 비어 있으면 null로 저장한다. */
     public void replace(String branchName, List<WorkingFileEntry> files, Instant observedAt, Instant expiresAt) {
-        requireValue(branchName, "branchName");
         requireValue(observedAt, "observedAt");
         requireValue(expiresAt, "expiresAt");
         if (!expiresAt.isAfter(observedAt)) {
             throw new IllegalArgumentException("expiresAt must be after observedAt");
         }
-        this.branchName = branchName;
+        this.branchName = branchName == null || branchName.isBlank() ? null : branchName;
         this.files = files == null ? new ArrayList<>() : new ArrayList<>(files);
         this.observedAt = observedAt;
         this.expiresAt = expiresAt;

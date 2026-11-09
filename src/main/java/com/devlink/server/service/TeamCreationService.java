@@ -11,6 +11,8 @@ import com.devlink.server.repository.TeamMemberRepository;
 import com.devlink.server.repository.TeamRepository;
 import com.devlink.server.repository.UserRepository;
 import org.hibernate.exception.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -21,6 +23,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class TeamCreationService {
+    private static final Logger log = LoggerFactory.getLogger(TeamCreationService.class);
     private static final int MAX_CREATION_ATTEMPTS = 5;
     private final TeamRepository teams;
     private final TeamMemberRepository members;
@@ -53,8 +56,12 @@ public class TeamCreationService {
                     throw exception;
                 }
                 if (attempt == MAX_CREATION_ATTEMPTS) {
+                    log.error("Team creation failed after repeated invite code conflicts: userId={}, attempts={}",
+                            userId, attempt);
                     throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
                 }
+                log.debug("Retrying team creation after invite code conflict: userId={}, attempt={}/{}",
+                        userId, attempt, MAX_CREATION_ATTEMPTS);
             }
         }
         throw new IllegalStateException("Team creation attempts exhausted");
@@ -62,6 +69,7 @@ public class TeamCreationService {
 
     private CreateTeamResponse createTeam(Long userId, CreateTeamRequest request) {
         if (!users.existsById(userId)) {
+            log.debug("Team creation rejected: account not found, userId={}", userId);
             throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
         }
         Team team = teams.saveAndFlush(Team.create(request.name(), inviteCodes.generate()));
