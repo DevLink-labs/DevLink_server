@@ -65,6 +65,22 @@ public class ConnectionRegistry {
                 .map(ConnectionState::session).filter(WebSocketSession::isOpen);
     }
 
+    /** 정리 작업을 기다리지 않고 현재 연결의 하트비트 유효 여부를 읽는다. 연결 제거·소켓 종료는 하지 않는다. */
+    public boolean hasActiveConnection(String agentId, Duration timeout) {
+        Assert.hasText(agentId, "agentId must not be blank");
+        Assert.notNull(timeout, "timeout must not be null");
+        Assert.isTrue(!timeout.isZero() && !timeout.isNegative(), "timeout must be positive");
+        long timeoutNanos = timeout.toNanos();
+        boolean[] active = {false};
+        // 재접속·PING 갱신과 같은 잠금에서 하나의 연결 상태를 기준으로 판정한다.
+        connections.computeIfPresent(agentId, (key, current) -> {
+            active[0] = current.session().isOpen()
+                    && nanoTime.getAsLong() - current.lastPingNanos() < timeoutNanos;
+            return current;
+        });
+        return active[0];
+    }
+
     /** 이전 연결의 메시지가 새 연결에 영향을 주지 않도록 실제 세션 객체까지 비교한다. */
     public boolean isCurrentConnection(String agentId, WebSocketSession session) {
         Assert.hasText(agentId, "agentId must not be blank");

@@ -29,17 +29,24 @@
 - `gitCoverage.state`는 팀 저장소가 없으면 `NOT_COLLECTED/NO_TEAM_REPOSITORIES`, 저장소는 있으나 커밋·관측 행이 없으면 `NOT_COLLECTED/NO_RETAINED_OBSERVATIONS`, 그 외 `AVAILABLE`.
 - 관련 파일은 후보별로 작업 중 우선, 근거 시각 내림차순, 저장소 ID·경로 오름차순 최대 5개다. `sources`는 `WORKING`, `COMMIT`이며 4차에 값이 추가될 수 있다.
 
-## 접속 상태 연계 (담당: 최보경, TODO)
+## 접속 상태 연계 (담당: 최보경)
 
-현재 `candidates[].connectionStatus`는 AgentRecommendationService.toResponse에서 `Agent.getStatus()`를 그대로 넣는다. 이 값은 `agents.status` 컬럼이며 AgentPresenceService가 브로커 연결·하트비트에 따라 갱신한다. 설계 문서 5.2는 접속 상태를 추천 시점 값으로 정의하고 점수에는 넣지 않는다.
+`candidates[].connectionStatus`는 AgentRecommendationService.toResponse에서 AgentPresenceService.connectionStatus로 조회한다. `agents.status`가 ONLINE이고, 현재 브로커 소켓이 열려 있으며, 하트비트가 유효할 때만 ONLINE을 반환한다. 나머지는 OFFLINE이다. 접속 상태는 점수나 후보 선정에 반영하지 않는다.
 
-남은 작업은 다음과 같다.
+조회 기준과 비용은 다음과 같다.
 
-- 추천 시점의 실제 연결 여부를 ConnectionRegistry 또는 AgentPresenceService에서 읽어 `connectionStatus`를 채운다. 하트비트 만료 후 아직 OFFLINE으로 갱신되지 않은 Agent가 ONLINE으로 보이는 창을 없앤다.
-- OFFLINE 후보도 점수 기준에 들면 반환하므로, 호출자가 그 후보를 골라 `create_task`를 호출했을 때 기존 `RECEIVER_OFFLINE` 처리로 거부되고 다음 후보를 다시 고를 수 있는 전달 경로를 통합 테스트로 검증한다.
-- 상태 조회가 추가 쿼리나 레지스트리 조회를 수반하면 후보 최대 5명 기준으로 비용을 확인한다.
+- ConnectionRegistry.hasActiveConnection은 단조 시계로 마지막 PING 이후 경과 시간을 확인한다. 정리 작업과 동일한 `devlink.broker.heartbeat-timeout-ms` 설정(기본 40초)을 사용하고, 경과 시간이 제한과 같아지는 순간부터 만료로 본다. 정리 작업이나 DB 갱신이 늦어져도 추천 응답은 OFFLINE이다.
+- 상태 조회는 연결 제거·소켓 종료·DB 갱신·이벤트 발행을 하지 않는다. 기존 하트비트 정리와 재접속 처리는 그대로 유지된다.
+- 점수로 최종 선정된 최대 5명(근거 부족 참고 후보 포함)만 조회한다. 이미 읽은 Agent와 메모리 레지스트리를 사용하므로 추가 DB 쿼리는 없으며, 레지스트리 조회도 최대 5회다. DB 상태가 OFFLINE이면 레지스트리 조회를 생략한다.
+- 응답은 조회 당시의 상태다. 추천 후 실제 작업 요청 사이에 연결 상태가 바뀔 수 있으므로 전달 결과는 작업 API에서 별도로 확인한다.
 
-연계 코드의 진입점은 AgentRecommendationService.toResponse 하나이며, 점수 계산과 후보 선택은 손대지 않는다.
+OFFLINE 후보를 선택한 후의 작업 요청은 생성과 전달 결과를 구분한다.
+
+- DB 상태도 OFFLINE이면 작업을 PENDING으로 생성하고 201 응답의 `delivery.status=DELIVERY_NOT_SENT`, `delivery.reasonCode=RECEIVER_OFFLINE`으로 반환한다.
+- DB는 ONLINE이지만 실제 연결이 없으면 추천 상태는 OFFLINE이며, 작업 요청의 전달 사유는 기존 `CONNECTION_UNAVAILABLE`이다.
+- 수신자가 다시 ONLINE을 보고하면 기존 미전달 작업을 재전송한다. 생성 실패로 간주해 다른 후보에게 자동으로 새 작업을 만들지 않는다.
+
+검증은 ConnectionRegistryTest의 만료 경계·PING 갱신·재접속, AgentPresenceServiceTest의 상태 조합·추가 DB 접근 없음, AgentRecommendationServiceTest의 점수·후보 유지·최대 5명 조회, AgentRecommendationIntegrationTest의 실제 소켓 접속·단절·재접속 및 추천 후보에 대한 작업 생성·전달 결과로 수행한다.
 
 ## 한계
 

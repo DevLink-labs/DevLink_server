@@ -1,5 +1,6 @@
 package com.devlink.server.service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import com.devlink.server.common.BusinessException;
@@ -12,6 +13,7 @@ import com.devlink.server.realtime.ConnectionRegistry;
 import com.devlink.server.repository.AgentRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.socket.WebSocketSession;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,9 +27,40 @@ class AgentPresenceServiceTest {
     private final AgentRepository agents = mock(AgentRepository.class);
     private final ConnectionRegistry connections = new ConnectionRegistry();
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final AgentPresenceService service = new AgentPresenceService(agents, connections, events);
+    private final AgentPresenceService service = new AgentPresenceService(agents, connections, events, 40000);
     private final AgentPrincipal principal = new AgentPrincipal(11, 21, 31);
     private final Agent agent = Agent.create(31L, 21L, "Codex", null, ToolType.CODEX, "server");
+
+    @Test
+    void connectionStatusRequiresOnlineReportAndOpenConnectionWithoutDatabaseAccess() {
+        ReflectionTestUtils.setField(agent, "id", 11L);
+        WebSocketSession session = registerSession();
+        assertThat(service.connectionStatus(agent)).isEqualTo(AgentStatus.OFFLINE);
+
+        agent.markOnline(LocalDateTime.now());
+        assertThat(service.connectionStatus(agent)).isEqualTo(AgentStatus.ONLINE);
+
+        when(session.isOpen()).thenReturn(false);
+        assertThat(service.connectionStatus(agent)).isEqualTo(AgentStatus.OFFLINE);
+        connections.unregister("11", session);
+        assertThat(service.connectionStatus(agent)).isEqualTo(AgentStatus.OFFLINE);
+        // 추천용 조회는 DB의 ONLINE 값을 수정하거나 이벤트를 발행하지 않는다.
+        assertThat(agent.getStatus()).isEqualTo(AgentStatus.ONLINE);
+        verifyNoInteractions(agents, events);
+    }
+
+    @Test
+    void connectionStatusUsesConfiguredHeartbeatTimeout() {
+        ConnectionRegistry registry = mock(ConnectionRegistry.class);
+        AgentPresenceService configured = new AgentPresenceService(agents, registry, events, 2500);
+        ReflectionTestUtils.setField(agent, "id", 11L);
+        agent.markOnline(LocalDateTime.now());
+        when(registry.hasActiveConnection("11", Duration.ofMillis(2500))).thenReturn(true);
+
+        assertThat(configured.connectionStatus(agent)).isEqualTo(AgentStatus.ONLINE);
+        verify(registry).hasActiveConnection("11", Duration.ofMillis(2500));
+        verifyNoInteractions(agents, events);
+    }
 
     @Test
     void onlineUpdatesStatusAndUsesServerTime() {
