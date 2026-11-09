@@ -61,7 +61,10 @@ devlink:
       openrouter-provider-guard: false
 ```
 
-운영은 `.env`(PROD_ENV)에 `UPSTAGE_API_KEY`만 넣으면 LLM 경로가 켜진다. 키가 없으면 구조 신호 전용으로 동작하고 요약 행의 `model`이 `structural`로 남는다.
+운영 Compose는 GitHub Actions Secret `PROD_ENV`에 등록한 추론 설정을 서버 컨테이너에 전달한다.
+Upstage를 쓰면 `UPSTAGE_API_KEY`만 추가한다. OpenRouter를 쓰면 `UPSTAGE_API_KEY`에 OpenRouter 키를 넣고,
+[`deploy/.prod.env.example`](../deploy/.prod.env.example)의 API URL·모델·제공자 필터 설정을 함께 추가한다.
+키가 없으면 구조 신호 전용으로 동작하고 요약 행의 `model`이 `structural`로 남는다.
 
 ## 검증
 
