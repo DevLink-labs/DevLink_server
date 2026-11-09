@@ -1,5 +1,6 @@
 package com.devlink.server.service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import com.devlink.server.common.BusinessException;
 import com.devlink.server.common.ErrorCode;
@@ -8,6 +9,8 @@ import com.devlink.server.domain.agent.Agent;
 import com.devlink.server.domain.agent.AgentStatus;
 import com.devlink.server.realtime.ConnectionRegistry;
 import com.devlink.server.repository.AgentRepository;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
@@ -17,10 +20,26 @@ import org.springframework.web.socket.WebSocketSession;
 public class AgentPresenceService {
     private final AgentRepository agents;
     private final ConnectionRegistry connections;
+    private final ApplicationEventPublisher events;
+    private final Duration heartbeatTimeout;
 
-    public AgentPresenceService(AgentRepository agents, ConnectionRegistry connections) {
+    public AgentPresenceService(AgentRepository agents, ConnectionRegistry connections,
+            ApplicationEventPublisher events,
+            @Value("${devlink.broker.heartbeat-timeout-ms:40000}") long timeoutMillis) {
+        Assert.isTrue(timeoutMillis > 0, "heartbeat timeout must be positive");
         this.agents = agents;
         this.connections = connections;
+        this.events = events;
+        this.heartbeatTimeout = Duration.ofMillis(timeoutMillis);
+    }
+
+    /** 조회된 Agent의 상태와 현재 연결을 조합하며, 추가 DB 조회나 상태 갱신은 하지 않는다. */
+    public AgentStatus connectionStatus(Agent agent) {
+        Assert.notNull(agent, "agent must not be null");
+        // 브로커만 연결되고 Agent가 ONLINE을 보고하지 않은 경우는 OFFLINE을 유지한다.
+        return agent.getStatus() == AgentStatus.ONLINE
+                && connections.hasActiveConnection(agent.getId().toString(), heartbeatTimeout)
+                ? AgentStatus.ONLINE : AgentStatus.OFFLINE;
     }
 
     @Transactional
@@ -39,6 +58,8 @@ public class AgentPresenceService {
         }
         if (status == AgentStatus.ONLINE) {
             agent.markOnline(LocalDateTime.now());
+            // 커밋에 성공한 ONLINE 보고만 미전달 작업 조회를 시작한다.
+            events.publishEvent(new AgentOnline(principal.agentId(), session));
         } else {
             agent.markOffline();
         }
@@ -52,4 +73,6 @@ public class AgentPresenceService {
             }
         });
     }
+
+    record AgentOnline(long agentId, WebSocketSession session) { }
 }

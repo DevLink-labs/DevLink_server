@@ -31,6 +31,59 @@ class ConnectionRegistryTest {
     private final ConnectionRegistry registry = new ConnectionRegistry();
 
     @Test
+    void activeConnectionExpiresAtBoundaryWithoutRemovingOrClosingSocket() throws Exception {
+        AtomicLong clock = new AtomicLong();
+        ConnectionRegistry timed = new ConnectionRegistry(clock::get);
+        WebSocketSession session = openSession();
+        timed.register("11", session);
+        Duration timeout = Duration.ofMillis(2500);
+
+        clock.set(timeout.toNanos() - 1);
+        assertThat(timed.hasActiveConnection("11", timeout)).isTrue();
+        clock.incrementAndGet();
+        assertThat(timed.hasActiveConnection("11", timeout)).isFalse();
+        // 추천용 조회는 연결을 남겨 기존 정리 작업이 나중에 종료할 수 있게 한다.
+        assertThat(timed.findByAgentId("11")).contains(session);
+        verify(session, never()).close(any(CloseStatus.class));
+        assertThat(timed.removeExpiredConnections(timeout))
+                .containsExactly(new ConnectionRegistry.ExpiredConnection("11", session));
+    }
+
+    @Test
+    void activeConnectionRequiresAnOpenRegisteredSocket() {
+        Duration timeout = Duration.ofSeconds(40);
+        assertThat(registry.hasActiveConnection("11", timeout)).isFalse();
+        WebSocketSession session = openSession();
+        registry.register("11", session);
+        assertThat(registry.hasActiveConnection("11", timeout)).isTrue();
+        when(session.isOpen()).thenReturn(false);
+        assertThat(registry.hasActiveConnection("11", timeout)).isFalse();
+    }
+
+    @Test
+    void activeConnectionUsesLatestPingAndIgnoresOldConnectionEventsAfterReconnect() {
+        AtomicLong clock = new AtomicLong();
+        ConnectionRegistry timed = new ConnectionRegistry(clock::get);
+        Duration timeout = Duration.ofSeconds(40);
+        WebSocketSession previous = openSession();
+        timed.register("11", previous);
+        clock.set(Duration.ofSeconds(20).toNanos());
+        timed.recordHeartbeat("11", previous);
+        clock.set(Duration.ofSeconds(40).toNanos());
+        assertThat(timed.hasActiveConnection("11", timeout)).isTrue();
+        clock.set(Duration.ofSeconds(60).toNanos());
+        assertThat(timed.hasActiveConnection("11", timeout)).isFalse();
+
+        WebSocketSession current = openSession();
+        timed.register("11", current);
+        assertThat(timed.recordHeartbeat("11", previous)).isFalse();
+        assertThat(timed.unregister("11", previous)).isFalse();
+        assertThat(timed.hasActiveConnection("11", timeout)).isTrue();
+        clock.set(Duration.ofSeconds(100).toNanos());
+        assertThat(timed.hasActiveConnection("11", timeout)).isFalse();
+    }
+
+    @Test
     void firstPingMustArriveBeforeTimeoutAndExpiresAtBoundary() {
         AtomicLong clock = new AtomicLong();
         ConnectionRegistry timed = new ConnectionRegistry(clock::get);

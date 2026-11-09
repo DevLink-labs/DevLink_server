@@ -142,7 +142,7 @@ class TaskAckIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void reconnectEndsOnlyOldWaitAndNewConnectionCanAcknowledgeItsOwnTask() throws Exception {
+    void reconnectEndsOldWaitAndOnlyNewEventCanAcknowledgeRetriedTask() throws Exception {
         try (var client = HttpClient.newHttpClient(); var previous = connect(client, "receiver", receiver)) {
             previous.online();
             Task oldTask = saveTask();
@@ -153,19 +153,22 @@ class TaskAckIntegrationTest extends AbstractIntegrationTest {
                 assertThat(closed.eventId()).isEqualTo(oldSend.eventId());
                 assertThat(closed.status()).isEqualTo(Status.CONNECTION_CLOSED);
                 current.online();
-                Task newTask = saveTask();
-                var newSend = routing.sendTask(newTask.getId());
-                current.next();
-                // 새 연결이 옛 전송 건을 ACK 해도 새 작업의 대기에는 영향이 없어야 한다.
+                var retried = current.next();
+                assertThat(retried.path("payload").path("task_id").asLong()).isEqualTo(oldTask.getId());
+                String newEventId = retried.path("event_id").asText();
+                assertThat(newEventId).isNotEqualTo(oldSend.eventId());
+
+                // 같은 작업이어도 새 연결에서는 이전 전송의 ACK를 받아들이지 않는다.
                 current.ack(oldTask.getId(), oldSend.eventId());
                 current.barrier();
                 assertThat(ackResults.results).isEmpty();
-                current.ack(newTask.getId(), newSend.eventId());
+
+                current.ack(oldTask.getId(), newEventId);
                 var received = nextResult();
-                assertThat(received.eventId()).isEqualTo(newSend.eventId());
+                assertThat(received.eventId()).isEqualTo(newEventId);
                 assertThat(received.status()).isEqualTo(Status.ACKNOWLEDGED);
+                assertThat(tasks.findById(oldTask.getId()).orElseThrow().getDeliveredAt()).isNotNull();
             }
-            assertUnchangedTask(oldTask.getId());
         }
     }
 

@@ -3,6 +3,7 @@ package com.devlink.server.service;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
@@ -12,6 +13,7 @@ import com.devlink.server.common.ErrorCode;
 import com.devlink.server.domain.AgentPrincipal;
 import com.devlink.server.domain.agent.Agent;
 import com.devlink.server.domain.agent.AgentPart;
+import com.devlink.server.domain.agent.AgentStatus;
 import com.devlink.server.domain.agent.ToolType;
 import com.devlink.server.dto.recommendation.AgentRecommendationRequest;
 import com.devlink.server.dto.recommendation.AgentRecommendationResponse;
@@ -23,6 +25,7 @@ import com.devlink.server.dto.recommendation.RecommendationStatus;
 import com.devlink.server.dto.recommendation.RelatedFileSource;
 import com.devlink.server.dto.recommendation.WorkingObservationState;
 import com.devlink.server.repository.AgentRepository;
+import com.devlink.server.realtime.ConnectionRegistry;
 import com.devlink.server.service.RecommendationGitEvidence.RelatedFile;
 import com.devlink.server.service.RecommendationGitEvidence.RepoPath;
 import com.devlink.server.service.RecommendationGitEvidence.UserEvidence;
@@ -31,6 +34,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.test.util.ReflectionTestUtils;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,6 +43,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -52,7 +59,10 @@ class AgentRecommendationServiceTest {
     private final AgentRepository agents = mock(AgentRepository.class);
     private final TeamAuthorizationService teams = mock(TeamAuthorizationService.class);
     private final RecommendationGitEvidenceService evidence = mock(RecommendationGitEvidenceService.class);
-    private final AgentRecommendationService service = new AgentRecommendationService(agents, teams, evidence,
+    private final ConnectionRegistry connections = mock(ConnectionRegistry.class);
+    private final AgentPresenceService presence = spy(new AgentPresenceService(
+            agents, connections, mock(ApplicationEventPublisher.class), 40000));
+    private final AgentRecommendationService service = new AgentRecommendationService(agents, teams, evidence, presence,
             fixedClock());
 
     @ParameterizedTest
@@ -207,7 +217,9 @@ class AgentRecommendationServiceTest {
     void tiesAreOrderedByAgentIdAndLimitedToFive() {
         List<Agent> team = new java.util.ArrayList<>();
         for (long id = 9; id >= 3; id--) {
-            team.add(agent(id, id * 10, "Agent " + id, List.of("인증")));
+            Agent candidate = agent(id, id * 10, "Agent " + id, List.of("인증"));
+            candidate.markOnline(LocalDateTime.now());
+            team.add(candidate);
         }
         stubTeam(team);
         stubEvidence(RecommendationGitEvidence.empty(GitCoverageState.NOT_COLLECTED,
@@ -220,6 +232,59 @@ class AgentRecommendationServiceTest {
         assertThat(response.candidates()).extracting(RecommendationCandidateResponse::agentId)
                 .containsExactly(3L, 4L, 5L, 6L, 7L);
         assertThat(response.gitCoverage().reason()).isEqualTo(GitCoverageReason.NO_RETAINED_OBSERVATIONS);
+        // 후보가 더 많아도 응답으로 선정한 5명만 상태를 확인하며 추가 DB 조회는 없다.
+        for (Agent agent : team) {
+            if (agent.getId() <= 7) {
+                verify(presence).connectionStatus(agent);
+                verify(connections).hasActiveConnection(agent.getId().toString(), Duration.ofSeconds(40));
+            }
+        }
+        verifyNoMoreInteractions(presence);
+        verifyNoMoreInteractions(connections);
+        verify(agents).findRecommendationCandidates(TEAM);
+        verifyNoMoreInteractions(agents);
+    }
+
+    @Test
+    void connectionChangesDoNotAffectScoresOrCandidateSelection() {
+        Agent first = agent(21L, 200L, "인증 Agent", List.of("인증"));
+        Agent second = agent(22L, 300L, "토큰 Agent", List.of("인증"));
+        first.markOnline(LocalDateTime.now());
+        stubTeam(List.of(first, second));
+        stubEvidence(RecommendationGitEvidence.empty(GitCoverageState.NOT_COLLECTED,
+                GitCoverageReason.NO_TEAM_REPOSITORIES, WorkingObservationState.NOT_COLLECTED));
+        when(connections.hasActiveConnection("21", Duration.ofSeconds(40))).thenReturn(true);
+
+        AgentRecommendationResponse online = service.recommend(TEAM, REQUESTER,
+                new AgentRecommendationRequest(QUESTION, null));
+        when(connections.hasActiveConnection("21", Duration.ofSeconds(40))).thenReturn(false);
+        AgentRecommendationResponse offline = service.recommend(TEAM, REQUESTER,
+                new AgentRecommendationRequest(QUESTION, null));
+
+        assertThat(online.candidates()).extracting(RecommendationCandidateResponse::connectionStatus)
+                .containsExactly(AgentStatus.ONLINE, AgentStatus.OFFLINE);
+        assertThat(offline.candidates()).extracting(RecommendationCandidateResponse::connectionStatus)
+                .containsExactly(AgentStatus.OFFLINE, AgentStatus.OFFLINE);
+        assertThat(offline.candidates()).usingRecursiveComparison().ignoringFields("connectionStatus")
+                .isEqualTo(online.candidates());
+        assertThat(offline.status()).isEqualTo(online.status());
+    }
+
+    @Test
+    void zeroScoreReferenceCandidatesAlsoUseCurrentConnectionStatus() {
+        Agent reference = agent(21L, 200L, "결제 Agent", List.of("결제"));
+        reference.markOnline(LocalDateTime.now());
+        stubTeam(List.of(reference));
+        stubEvidence(RecommendationGitEvidence.empty(GitCoverageState.NOT_COLLECTED,
+                GitCoverageReason.NO_TEAM_REPOSITORIES, WorkingObservationState.NOT_COLLECTED));
+        when(connections.hasActiveConnection("21", Duration.ofSeconds(40))).thenReturn(true);
+
+        AgentRecommendationResponse response = service.recommend(TEAM, REQUESTER,
+                new AgentRecommendationRequest(QUESTION, null));
+
+        assertThat(response.status()).isEqualTo(RecommendationStatus.INSUFFICIENT_EVIDENCE);
+        assertThat(response.candidates().get(0).connectionStatus()).isEqualTo(AgentStatus.ONLINE);
+        assertThat(response.candidates().get(0).score()).isZero();
     }
 
     @Test
