@@ -1,6 +1,9 @@
 package com.devlink.server.repository;
 
 import java.time.Instant;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import java.util.Collection;
 import java.util.List;
 import com.devlink.server.domain.gitrepo.WorkingFile;
@@ -18,4 +21,37 @@ public interface WorkingFileRepository extends JpaRepository<WorkingFile, Workin
     boolean existsByIdRepoIdIn(Collection<Long> repoIds);
 
     long deleteByExpiresAtBefore(Instant threshold);
+    @Modifying
+    @Query(value = """
+            INSERT INTO working_files (
+                repo_id,
+                user_id,
+                branch_name,
+                files,
+                observed_at,
+                expires_at
+            )
+            VALUES (
+                :repoId,
+                :userId,
+                :branchName,
+                CAST(:filesJson AS jsonb),
+                :observedAt,
+                :expiresAt
+            )
+            ON CONFLICT (repo_id, user_id)
+            DO UPDATE SET
+                branch_name = EXCLUDED.branch_name,
+                files = EXCLUDED.files,
+                observed_at = EXCLUDED.observed_at,
+                expires_at = EXCLUDED.expires_at
+            WHERE working_files.observed_at <= EXCLUDED.observed_at
+            """, nativeQuery = true)
+    int upsert(
+            @Param("repoId") Long repoId,
+            @Param("userId") Long userId,
+            @Param("branchName") String branchName,
+            @Param("filesJson") String filesJson,
+            @Param("observedAt") Instant observedAt,
+            @Param("expiresAt") Instant expiresAt);
 }

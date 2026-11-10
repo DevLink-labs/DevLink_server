@@ -18,7 +18,6 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -47,16 +46,7 @@ public class DependencyGraphController {
     public ApiResponse<RepositoryInfo> upload(@PathVariable long teamId,
             @AuthenticationPrincipal AgentPrincipal agent, HttpServletRequest request) throws IOException {
         return ApiResponse.success(service.upload(teamId, agent, bounded(request, Upload.class)));
-    }
-
-    // 트리 전용 임시 경로. 요청 본문은 3차 IDX-3-02 작업 파일 계약을 따르며, 그 API가 들어오면 이 엔드포인트는 제거한다.
-    @PutMapping(path = "/dependency-graph/working-files/{repoKey}", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public ApiResponse<Void> observe(@PathVariable long teamId, @PathVariable String repoKey,
-            @AuthenticationPrincipal AgentPrincipal agent, HttpServletRequest request) throws IOException {
-        service.observe(teamId, agent, repoKey, bounded(request, WorkingObservation.class));
-        return ApiResponse.success(null);
-    }
-
+    }    
     @GetMapping("/dependency-graphs")
     public ApiResponse<List<RepositoryInfo>> repositories(@PathVariable long teamId,
             @AuthenticationPrincipal UserPrincipal user) {
