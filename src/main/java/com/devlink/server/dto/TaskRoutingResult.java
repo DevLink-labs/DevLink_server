@@ -4,6 +4,8 @@ package com.devlink.server.dto;
 public record TaskRoutingResult(long taskId, Status status, String eventId, String connectionId) {
     public enum Status {
         SENT,
+        ALREADY_DELIVERED,
+        ACK_IN_PROGRESS,
         TASK_NOT_PENDING,
         RECEIVER_OFFLINE,
         CONNECTION_UNAVAILABLE,

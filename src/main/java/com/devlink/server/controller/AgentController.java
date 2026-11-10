@@ -13,6 +13,8 @@ import com.devlink.server.service.AgentService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -30,6 +32,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/agents")
 @RequiredArgsConstructor
 public class AgentController {
+    private static final Logger log = LoggerFactory.getLogger(AgentController.class);
+
     private final AgentService agents;
 
     @PostMapping("/teams/{teamId}")
@@ -48,6 +52,8 @@ public class AgentController {
         if (principal instanceof AgentPrincipal agent) {
             // Agent 토큰은 해당 Agent가 속한 팀의 목록만 조회 허용
             if (agent.teamId() != teamId.longValue()) {
+                log.debug("Agent list rejected: reason=team_mismatch, agentId={}, agentTeamId={}, requestedTeamId={}",
+                        agent.agentId(), agent.teamId(), teamId);
                 throw new BusinessException(ErrorCode.ACCESS_DENIED);
             }
             return ApiResponse.success(agents.list(agent.ownerUserId(), teamId, ownedByMe));
