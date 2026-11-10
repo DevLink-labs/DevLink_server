@@ -171,7 +171,7 @@ class WorkingFileHttpIntegrationTest extends AbstractIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"0", "-1", "abc", "9223372036854775808"})
     void invalidTeamIdsReturn400(String team) throws Exception {
-        error(send("PUT", "/api/v1/teams/" + team + "/git/working-files/" + REPO_KEY, bearer(),
+        error(send("PUT", "/api/v1/teams/" + team + workingPath() + REPO_KEY, bearer(),
                 publisher(validBody()), "application/json"), 400, "VALIDATION_FAILED");
         assertNoWrites();
     }
@@ -347,7 +347,8 @@ class WorkingFileHttpIntegrationTest extends AbstractIntegrationTest {
     }
     private ObjectNode file(ObjectNode body) { return (ObjectNode) body.at("/files/0"); }
     private String bearer() { return "Bearer " + token; }
-    private String endpoint(Long team, String key) { return "/api/v1/teams/" + team + "/git/working-files/" + key; }
+    protected String workingPath() { return "/git/working-files/"; }
+    private String endpoint(Long team, String key) { return "/api/v1/teams/" + team + workingPath() + key; }
     private HttpResponse<String> put(ObjectNode body) throws Exception {
         return send("PUT", endpoint(teamId, REPO_KEY), bearer(), publisher(body), "application/json");
     }

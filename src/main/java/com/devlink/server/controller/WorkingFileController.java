@@ -21,7 +21,8 @@ public class WorkingFileController {
 	private final WorkingFileService service;
 	
 	@PutMapping(
-			value = "/working-files/{repoKey}",
+			value = {"/working-files/{repoKey}",
+					"/dependency-graph/working-files/{repoKey}"},
 			consumes = MediaType.APPLICATION_JSON_VALUE,
 			produces = MediaType.APPLICATION_JSON_VALUE)
 	public ApiResponse<Void> replace(

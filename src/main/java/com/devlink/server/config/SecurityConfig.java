@@ -98,11 +98,9 @@ public class SecurityConfig {
         		.requestMatchers(
         		        HttpMethod.GET,
         		        "/api/v1/teams/*/git/dependency-sources/*")
-        		.requestMatchers(
-        		        HttpMethod.PUT,
-        		        "/api/v1/teams/*/git/dependency-graph/working-files/*")
         		.requestMatchers("/api/v1/teams/*/git/commits:batch",
-        				"/api/v1/teams/*/git/working-files/*"))
+        				"/api/v1/teams/*/git/working-files/*",
+        				 "/api/v1/teams/*/git/dependency-graph/working-files/*"))
                 .cors(cors -> cors.configurationSource(apiCorsConfigurationSource(allowedOrigins)))
                 // Agent 토큰 인증 시 기존 사용자 세션 ID 변경 방지
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
