@@ -7,7 +7,11 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 // Bounded context: git.
-/** 저장소 커밋 이력. 생성 후 변경하지 않는다. authorUserId는 작성자 미대조 시 null이다. */
+/**
+ * 저장소 커밋 이력.
+ * 작성자 미대조 시 authorUserId는 null이며, 확인 후 한 번만 보완한다.
+ * 그 외 커밋 정보는 변경하지 않는다.
+ */
 @Entity
 @Table(name = "repository_commits", uniqueConstraints = @UniqueConstraint(name = "uk_repository_commits_sha", columnNames = {"team_id", "repo_id", "commit_sha"}))
 @Getter
@@ -51,6 +55,16 @@ public class RepositoryCommit {
         entity.committedAt = committedAt;
         entity.authorUserId = authorUserId;
         return entity;
+    }
+    
+    public void fillAuthor(Long authorUserId) {
+    	if(authorUserId == null || authorUserId <= 0) {
+    		throw new IllegalArgumentException("authorUserId must be a positive integer");
+    	}
+    	if(this.authorUserId != null) {
+    		throw new IllegalStateException("authorUserId is already assigned");
+    	}
+    	this.authorUserId = authorUserId;
     }
 
     @PrePersist
