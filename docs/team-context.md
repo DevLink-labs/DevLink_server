@@ -4,7 +4,7 @@
 
 ## 실행 흐름
 
-1. `TaskCreationService`·`TaskStatusService`·`TaskCompleteService`·`TaskMessageService`가 `TaskEvent`를 저장한 뒤 같은 트랜잭션에서 `TeamContextOutboxWriter.enqueue(task, event)`를 호출한다. `outbox_events`에 작업·이벤트 ID, 요청자·수신자 파트, 파트 쌍의 처리 순번을 저장한다. 순번 할당과 커밋은 같은 파트 쌍 안에서 직렬화한다.
+1. `TaskCreationService`·`TaskStatusService`·`TaskCompleteService`·`TaskMessageService`가 `TaskEvent`를 저장한 뒤 같은 트랜잭션에서 `TeamContextOutboxWriter.enqueue(task, event)`를 호출한다. `outbox_events`에 작업·이벤트 ID, 요청자·수신자 파트, 파트 쌍의 처리 순번을 저장한다. 순번 할당과 커밋은 같은 파트 쌍 안에서 직렬화한다. 단, 수락(`PENDING → IN_PROGRESS`)은 적재하지 않는다. 본문이 고정 문구 "작업 수락"뿐이라 요약에 반영할 내용이 없고, 추론을 돌리면 상태 전이가 `changed`·`common`에 잘못 기록됐기 때문이다. 사유가 담기는 거절·실패는 그대로 적재한다.
 2. `TeamContextUpdater`는 전용 스케줄러에서 `devlink.team-context.poll-interval-ms` 간격으로 행을 점유한다. 같은 쌍의 선행 행이 점유 또는 재시도 대기 중이면 후속 행을 대기시킨다. Context 점유 시간은 추론 제한에 30초를 더한 값이며, 재시도 간격과 상한은 `devlink.outbox.*` 설정을 쓴다.
 3. `TeamContextStore.prepare`가 작업·이벤트 원본, 저장된 파트 정보, 직전 요약, 구조 신호와 추출 엔티티를 묶어 추론 입력을 만든다. 해당 이벤트 ID가 그 쌍의 버전 이력에 이미 있으면 PUBLISHED로 닫는다. 이전 형식의 Outbox는 팀 단위로 순서를 지키고 처리 시 Agent의 파트를 읽는다.
 4. `TeamContextInferenceClient.infer`가 다음 요약을 만든다. 추론은 쓰기 트랜잭션 밖에서 일어난다.
@@ -84,7 +84,7 @@ Upstage를 쓰면 `UPSTAGE_API_KEY`만 추가한다. OpenRouter를 쓰면 `UPSTA
 
 ## 미결 사항
 
-- 트리거 단위는 이벤트마다다. 호출량이 문제면 작업 상태 전이 단위로 묶는 디바운스를 설정값으로 추가한다.
+- 트리거 단위는 수락을 제외한 이벤트마다다(생성·질문·답변·완료 한 사이클에 추론 4회). 생성 이벤트는 요청 본문을 다음 이벤트 입력에 싣는 방식으로 미룰 수 있으나 아직 적용하지 않았다. 호출량이 문제면 작업 상태 전이 단위로 묶는 디바운스를 설정값으로 추가한다.
 - 요약 품질은 실제 대화 샘플로 프롬프트 버전별 비교가 필요하다. 구조 전용과 LLM 결과를 같은 이벤트 열에 돌려 비교한다.
 - 웹 화면용 세션 인증 경로는 아직 없다. 필요하면 추천 API와 같은 방식으로 사용자 체인에 matcher를 추가한다.
 - 3차 "LLM 호출 없음" 정책은 추천 기능 기준이었다. 이 기능은 LLM을 쓰므로 팀 합의를 기록한다.

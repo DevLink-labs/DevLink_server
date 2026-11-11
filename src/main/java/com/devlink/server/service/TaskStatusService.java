@@ -72,8 +72,11 @@ public class TaskStatusService {
                 previous + " → " + task.getStatus() + ": " + description));
         // 이력과 상태를 함께 flush한다. 동시 변경은 @Version으로 검출하고 전체 롤백한다.
         taskRepository.flush();
-        // 팀 Context 갱신 신호도 같은 트랜잭션에 남긴다.
-        teamContextOutbox.enqueue(task, history);
+        // 팀 Context 갱신 신호도 같은 트랜잭션에 남긴다. 수락은 고정 문구뿐이라 요약에 반영할 내용이 없고
+        // 추론을 돌리면 상태 전이가 맥락으로 잘못 기록되므로 사유가 담기는 거절·실패만 보낸다.
+        if (request.status() != TaskStatus.IN_PROGRESS) {
+            teamContextOutbox.enqueue(task, history);
+        }
         UUID outboxId = UUID.randomUUID();
         var message = TaskStatusChangedMessage.from(outboxId, task, previous);
         // 별도 트랜잭션이나 커밋 후 콜백을 사용하지 않는다. 저장 실패 시 상태와 이력도 롤백된다.

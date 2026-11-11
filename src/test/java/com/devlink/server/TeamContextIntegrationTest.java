@@ -126,18 +126,19 @@ class TeamContextIntegrationTest extends AbstractIntegrationTest {
         assertThat(first.getPromptVersion()).isEqualTo("v1");
         assertThat(first.getIssues()).isEmpty();
 
-        // 2) 실제 상태 서비스가 남긴 신호 → 버전 2
+        // 2) 수락은 신호를 남기지 않는다 → 추론도 새 버전도 없다
         statuses.changeStatus(taskId, backend.id(), new ChangeTaskStatusRequest(TaskStatus.IN_PROGRESS, 0L,
                 null, null, null));
-        assertThat(updater.processBatch()).isEqualTo(1);
-        assertThat(latest().getVersion()).isEqualTo(2);
+        assertThat(teamContextRows()).hasSize(1);
+        assertThat(updater.processBatch()).isZero();
+        assertThat(latest().getVersion()).isEqualTo(1);
 
-        // 3) 질문 → 버전 3, 미답변 질문이 쟁점으로 올라온다
+        // 3) 질문 → 버전 2, 미답변 질문이 쟁점으로 올라온다
         var question = messages.createQuestion(taskId, frontend.id(),
                 new TaskQuestionRequest("q-1", "`delivery`가 왜 null로 오는지? HTTP 404 대신 빈 200인지 확인해줘"));
         assertThat(updater.processBatch()).isEqualTo(1);
         var third = latest();
-        assertThat(third.getVersion()).isEqualTo(3);
+        assertThat(third.getVersion()).isEqualTo(2);
         assertThat(third.getLastEventId()).isEqualTo(Long.parseLong(question.eventId()));
         assertThat(third.getIssues()).hasSize(1);
         String reference = taskId + ":" + question.eventId();
@@ -146,21 +147,21 @@ class TeamContextIntegrationTest extends AbstractIntegrationTest {
         assertThat(third.getIssues().get(0).path("evidence").get(0).asText()).isEqualTo(reference);
         assertThat(third.getIssues().get(0).path("positions").get(0).path("part").asText()).isEqualTo("FRONTEND");
 
-        // 4) 답변 → 버전 4, 질문 쟁점이 닫힌다
+        // 4) 답변 → 버전 3, 질문 쟁점이 닫힌다
         var answer = messages.createAnswer(taskId, backend.id(),
                 new TaskAnswerRequest("a-1", "11/5부터 항상 채운다. 미존재 리소스는 404다.", question.eventId()));
         assertThat(updater.processBatch()).as("team-context rows: %s", describeRows()).isEqualTo(1);
         var fourth = latest();
-        assertThat(fourth.getVersion()).isEqualTo(4);
+        assertThat(fourth.getVersion()).isEqualTo(3);
         assertThat(fourth.getLastEventId()).isEqualTo(Long.parseLong(answer.eventId()));
         assertThat(fourth.getIssues()).isEmpty();
-        assertThat(contexts.count()).isEqualTo(4);
+        assertThat(contexts.count()).isEqualTo(3);
 
         // 5) 같은 이벤트를 다시 넣으면 새 버전 없이 PUBLISHED로 닫힌다
         tx.executeWithoutResult(status -> writer.enqueue(tasks.findById(taskId).orElseThrow(),
                 events.findById(Long.parseLong(answer.eventId())).orElseThrow()));
         assertThat(updater.processBatch()).isEqualTo(1);
-        assertThat(contexts.count()).isEqualTo(4);
+        assertThat(contexts.count()).isEqualTo(3);
         assertThat(teamContextRows()).allSatisfy(row -> assertThat(row.getStatus()).isEqualTo(OutboxStatus.PUBLISHED));
 
         // 6) 가리키는 작업이 없는 메시지는 영구 실패로 기록되고 요약은 그대로다
@@ -175,7 +176,7 @@ class TeamContextIntegrationTest extends AbstractIntegrationTest {
         var failed = outbox.findById(invalid).orElseThrow();
         assertThat(failed.getStatus()).isEqualTo(OutboxStatus.FAILED);
         assertThat(failed.getLastError()).isEqualTo("INVALID_EVENT");
-        assertThat(contexts.count()).isEqualTo(4);
+        assertThat(contexts.count()).isEqualTo(3);
         assertThat(updater.processBatch()).isZero();
 
         // 7) Agent 토큰 조회: 쌍 지정, 전체, 빈 쌍
@@ -185,7 +186,7 @@ class TeamContextIntegrationTest extends AbstractIntegrationTest {
         assertThat(pair.path("contexts")).hasSize(1);
         JsonNode view = pair.path("contexts").get(0);
         assertThat(view.path("counterpart").asText()).isEqualTo("BACKEND");
-        assertThat(view.path("version").asLong()).isEqualTo(4);
+        assertThat(view.path("version").asLong()).isEqualTo(3);
         assertThat(view.path("lastEventId").asLong()).isEqualTo(Long.parseLong(answer.eventId()));
         assertThat(view.path("model").asText()).isEqualTo(StructuralTeamContextInferenceClient.MODEL);
         assertThat(view.path("issues").isArray()).isTrue();
@@ -217,16 +218,17 @@ class TeamContextIntegrationTest extends AbstractIntegrationTest {
         statuses.changeStatus(taskId, backend.id(), new ChangeTaskStatusRequest(TaskStatus.FAILED, 1L,
                 null, "의존 API 미제공", false));
         List<OutboxEvent> rows = teamContextRows();
-        assertThat(rows).hasSize(3);
+        // 생성과 실패만 신호를 남긴다. 수락은 남기지 않는다.
+        assertThat(rows).hasSize(2);
         assertThat(rows).allSatisfy(row -> {
             assertThat(row.getAggregateType()).isEqualTo(TeamContextOutboxWriter.AGGREGATE_TYPE);
             assertThat(row.getAggregateId()).isEqualTo(team.getId().toString());
             assertThat(row.getMessage().path("task_id").asLong()).isEqualTo(taskId);
             assertThat(row.getMessage().path("payload").path("task_event_id").asLong()).isPositive();
         });
-        assertThat(updater.processBatch()).isEqualTo(3);
+        assertThat(updater.processBatch()).isEqualTo(2);
         var context = latest();
-        assertThat(context.getVersion()).isEqualTo(3);
+        assertThat(context.getVersion()).isEqualTo(2);
         assertThat(context.getIssues()).hasSize(1);
         assertThat(context.getIssues().get(0).path("topic").asText())
                 .isEqualTo(StructuralTeamContextInferenceClient.FAILED_PREFIX + "IN_PROGRESS → FAILED: 의존 API 미제공");
@@ -239,6 +241,8 @@ class TeamContextIntegrationTest extends AbstractIntegrationTest {
         var earlier = store.prepare(earlierDelivery).orElseThrow();
         statuses.changeStatus(taskId, backend.id(), new ChangeTaskStatusRequest(TaskStatus.IN_PROGRESS, 0L,
                 null, null, null));
+        // 수락은 신호를 남기지 않으므로 뒤따르는 질문을 나중 이벤트로 쓴다.
+        messages.createQuestion(taskId, frontend.id(), new TaskQuestionRequest("q-stale", "응답 형식이 바뀌었는지?"));
         var laterDelivery = teamContextRows().stream().map(OutboxDelivery::from)
                 .filter(delivery -> !delivery.outboxId().equals(earlierDelivery.outboxId())).findFirst().orElseThrow();
         var later = store.prepare(laterDelivery).orElseThrow();
