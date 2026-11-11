@@ -102,8 +102,17 @@ public class AgentService {
             log.debug("Agent deletion rejected: reason=task_history_exists, userId={}, agentId={}", userId, agentId);
             throw new BusinessException(ErrorCode.AGENT_HAS_TASKS);
         }
-        agents.delete(agent);
-        agents.flush();
+        try {
+            agents.delete(agent);
+            agents.flush();
+        } catch (DataIntegrityViolationException exception) {
+            if (TaskAgentForeignKeys.isViolatedBy(exception)) {
+                log.debug("Agent deletion rejected: reason=task_reference_conflict, userId={}, agentId={}",
+                        userId, agentId);
+                throw new BusinessException(ErrorCode.AGENT_HAS_TASKS);
+            }
+            throw exception;
+        }
         // 삭제 커밋 후 기존 브로커 연결과 ACK 대기 정리
         events.publishEvent(new AgentCredentialsChangedEvent(agentId));
     }
