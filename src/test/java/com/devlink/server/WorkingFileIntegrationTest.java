@@ -37,11 +37,11 @@ import com.devlink.server.repository.TeamRepository;
 import com.devlink.server.repository.UserRepository;
 import com.devlink.server.repository.WorkingFileRepository;
 import com.devlink.server.service.WorkingFileService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -62,7 +62,6 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
     @Autowired private WorkingFileRepository workingFiles;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private JdbcTemplate jdbc;
-    @Autowired private ObjectMapper json;
 
     private Long teamId;
     private AgentPrincipal owner;
@@ -92,7 +91,7 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
             files.add(new FileInput("src/한글😀-" + type + ".tsx", type));
         }
         Instant before = Instant.now().minusSeconds(1);
-        service.replace(teamId, REPO_KEY, owner, new WorkingFileRequest("feature/작업", files));
+        replace(teamId, REPO_KEY, owner, new WorkingFileRequest("feature/작업", files));
         Instant after = Instant.now().plusSeconds(1);
 
         WorkingFile saved = stored(REPO_KEY, owner);
@@ -109,7 +108,7 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
     @ValueSource(ints = {0, 2000})
     void createsRepositoryAndObservationForEmptyAndMaximumFileLists(int count) {
         List<FileInput> files = IntStream.range(0, count).mapToObj(i -> file("src/F" + i + ".java")).toList();
-        service.replace(teamId, REPO_KEY, owner, new WorkingFileRequest(null, files));
+        replace(teamId, REPO_KEY, owner, new WorkingFileRequest(null, files));
         WorkingFile saved = stored(REPO_KEY, owner);
         assertThat(saved.getBranchName()).isNull();
         assertThat(saved.getFiles()).hasSize(count);
@@ -118,15 +117,15 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void replacesEntireSnapshotThenClearsFilesWithoutDeletingObservationOrOtherUser() {
-        service.replace(teamId, REPO_KEY, owner, request("main", "src/Old.java", "src/Removed.java"));
-        service.replace(teamId, REPO_KEY, teammate, request("teammate", "src/Team.java"));
+        replace(teamId, REPO_KEY, owner, request("main", "src/Old.java", "src/Removed.java"));
+        replace(teamId, REPO_KEY, teammate, request("teammate", "src/Team.java"));
         WorkingFile otherBefore = stored(REPO_KEY, teammate);
-        service.replace(teamId, REPO_KEY, owner, request("feature/new", "src/New.java"));
+        replace(teamId, REPO_KEY, owner, request("feature/new", "src/New.java"));
         WorkingFile replaced = stored(REPO_KEY, owner);
         assertThat(replaced.getFiles()).containsExactly(new WorkingFileEntry("src/New.java", WorkingFileChangeType.MODIFIED));
         assertThat(replaced.getBranchName()).isEqualTo("feature/new");
 
-        service.replace(teamId, REPO_KEY, owner, new WorkingFileRequest(null, List.of()));
+        replace(teamId, REPO_KEY, owner, new WorkingFileRequest(null, List.of()));
 
         WorkingFile cleared = stored(REPO_KEY, owner);
         assertThat(cleared.getFiles()).isEmpty();
@@ -141,9 +140,9 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
     @Test
     void agentsOwnedBySameUserShareOneObservationAndRefreshIdenticalPayload() {
         var input = request("main", "src/App.java");
-        service.replace(teamId, REPO_KEY, owner, input);
+        replace(teamId, REPO_KEY, owner, input);
         Instant previous = stored(REPO_KEY, owner).getObservedAt();
-        service.replace(teamId, REPO_KEY, sameOwner, input);
+        replace(teamId, REPO_KEY, sameOwner, input);
         assertThat(observationCount()).isEqualTo(1);
         assertRepositoryCount(1);
         assertThat(stored(REPO_KEY, owner).getObservedAt()).isAfterOrEqualTo(previous);
@@ -152,14 +151,14 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
     @Test
     void separatesRepositoriesAndTeamsWithTheSameHash() {
         String otherKey = "b".repeat(64);
-        service.replace(teamId, REPO_KEY, owner, request("main", "first.java"));
-        service.replace(teamId, otherKey, owner, request("main", "second.java"));
+        replace(teamId, REPO_KEY, owner, request("main", "first.java"));
+        replace(teamId, otherKey, owner, request("main", "second.java"));
         AgentPrincipal otherTeamAgent = tx().execute(status -> {
             Team team = teams.save(Team.create("다른 팀", UUID.randomUUID().toString()));
             members.save(TeamMember.create(team.getId(), owner.ownerUserId(), MemberRole.OWNER));
             return agent(team.getId(), owner.ownerUserId(), "다른 팀 Agent");
         });
-        service.replace(otherTeamAgent.teamId(), REPO_KEY, otherTeamAgent, request("main", "other-team.java"));
+        replace(otherTeamAgent.teamId(), REPO_KEY, otherTeamAgent, request("main", "other-team.java"));
 
         assertRepositoryCount(2);
         assertThat(stored(REPO_KEY, owner).getFiles().getFirst().relativePath()).isEqualTo("first.java");
@@ -169,27 +168,22 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void guardsOlderSnapshotsAndAcceptsEqualAndNewerObservationTimes() throws Exception {
-        service.replace(teamId, REPO_KEY, owner, request("main", "initial.java"));
+    void revisionRejectsOlderRequestsAndKeepsTheLatestSnapshotAndExpiry() {
+        replace(teamId, REPO_KEY, owner, request("main", "initial.java"));
         long repoId = repoId(REPO_KEY, owner);
-        Instant time = Instant.parse("2030-01-01T00:00:00.123456Z");
-        String first = json.writeValueAsString(List.of(new WorkingFileEntry("newer.java", WorkingFileChangeType.ADDED)));
-        assertThat(upsert(repoId, "newer", first, time)).isEqualTo(1);
+        UUID revision = service.getRevision(teamId, REPO_KEY, owner).revision();
+        UUID latest = service.replace(teamId, REPO_KEY, owner, request("newer", "newer.java"),
+                "\"" + revision + "\"").revision();
         Map<String, Object> before = row(repoId, owner.ownerUserId());
-
-        assertThat(upsert(repoId, "old", "[]", time.minusSeconds(1))).isZero();
+        assertError(ErrorCode.WORKING_FILES_REVISION_MISMATCH, () -> service.replace(
+                teamId, REPO_KEY, owner, request("old", "old.java"), "\"" + revision + "\""));
         assertThat(row(repoId, owner.ownerUserId())).isEqualTo(before);
-
-        assertThat(upsert(repoId, null, "[]", time)).isEqualTo(1);
-        assertThat(stored(REPO_KEY, owner).getBranchName()).isNull();
-        assertThat(stored(REPO_KEY, owner).getFiles()).isEmpty();
-        assertThat(upsert(repoId, "latest", first, time.plusSeconds(1))).isEqualTo(1);
-        assertThat(stored(REPO_KEY, owner).getObservedAt()).isEqualTo(time.plusSeconds(1));
+        assertThat(service.getRevision(teamId, REPO_KEY, owner).revision()).isEqualTo(latest);
     }
 
     @Test
     void expiresExactlyAtNinetySecondsButRetainsTheStoredRow() {
-        service.replace(teamId, REPO_KEY, owner, request("main", "src/App.java"));
+        replace(teamId, REPO_KEY, owner, request("main", "src/App.java"));
         WorkingFile saved = stored(REPO_KEY, owner);
         assertThat(workingFiles.findByIdRepoIdAndExpiresAtAfter(saved.getRepoId(),
                 saved.getExpiresAt().minusNanos(1000))).hasSize(1);
@@ -200,30 +194,32 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
     @Test
     void preservesPathThatExceedsJavaLengthButMeetsUnicodeAndByteLimits() {
         String path = "😀".repeat(166) + "a".repeat(332) + "é".repeat(2);
-        service.replace(teamId, REPO_KEY, owner, request(null, path));
+        replace(teamId, REPO_KEY, owner, request(null, path));
         assertThat(stored(REPO_KEY, owner).getFiles().getFirst().relativePath()).isEqualTo(path);
     }
 
     @Test
     void rejectsInvalidIdentityTeamAndPayloadBeforeAnyRepositoryWrite() {
         var input = request("main", "src/App.java");
-        assertError(ErrorCode.AUTHENTICATION_REQUIRED, () -> service.replace(teamId, REPO_KEY, null, input));
-        assertError(ErrorCode.AUTHENTICATION_REQUIRED, () -> service.replace(teamId, REPO_KEY,
+        assertError(ErrorCode.AUTHENTICATION_REQUIRED, () -> replace(teamId, REPO_KEY, null, input));
+        assertError(ErrorCode.AUTHENTICATION_REQUIRED, () -> replace(teamId, REPO_KEY,
                 new AgentPrincipal(0, owner.ownerUserId(), teamId), input));
-        assertError(ErrorCode.VALIDATION_FAILED, () -> service.replace(0L, REPO_KEY, owner, input));
-        assertError(ErrorCode.ACCESS_DENIED, () -> service.replace(teamId + 1, REPO_KEY, owner, input));
-        assertError(ErrorCode.VALIDATION_FAILED, () -> service.replace(teamId, REPO_KEY, owner, request("main", "../bad")));
+        assertError(ErrorCode.VALIDATION_FAILED, () -> replace(0L, REPO_KEY, owner, input));
+        assertError(ErrorCode.ACCESS_DENIED, () -> replace(teamId + 1, REPO_KEY, owner, input));
+        assertError(ErrorCode.VALIDATION_FAILED, () -> replace(teamId, REPO_KEY, owner, request("main", "../bad")));
         jdbc.update("delete from team_members where team_id = ? and user_id = ?", teamId, owner.ownerUserId());
-        assertError(ErrorCode.ACCESS_DENIED, () -> service.replace(teamId, REPO_KEY, owner, input));
+        assertError(ErrorCode.ACCESS_DENIED, () -> replace(teamId, REPO_KEY, owner, input));
         assertRepositoryCount(0);
         assertThat(observationCount()).isZero();
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void actualDatabaseFailureRollsBackRepositoryCreationOrSnapshotReplacement(boolean existing) {
-        if (existing) service.replace(teamId, REPO_KEY, owner, request("main", "original.java"));
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void actualDatabaseFailureRollsBackRepositoryCreationSnapshotAndRevision(boolean existing, boolean conditional) {
+        if (existing) replace(teamId, REPO_KEY, owner, request("main", "original.java"));
         Map<String, Object> before = existing ? row(repoId(REPO_KEY, owner), owner.ownerUserId()) : null;
+        UUID beforeRevision = existing || conditional
+                ? service.getRevision(teamId, REPO_KEY, owner).revision() : null;
 
         // Fail in PostgreSQL after the real repository statement writes the test user's row.
         // The function/trigger exist only in this disposable Testcontainers database.
@@ -243,7 +239,8 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
                     + " AFTER INSERT OR UPDATE ON working_files FOR EACH ROW EXECUTE FUNCTION " + name + "()");
             try {
                 RuntimeException failure = assertThrows(RuntimeException.class, () ->
-                        service.replace(teamId, REPO_KEY, owner, request("feature/failure", "new.java")));
+                        service.replace(teamId, REPO_KEY, owner, request("feature/failure", "new.java"),
+                                conditional ? "\"" + beforeRevision + "\"" : null));
                 Throwable current = failure;
                 String sqlState = null;
                 while (current != null) {
@@ -251,9 +248,17 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
                     current = current.getCause();
                 }
                 assertThat(sqlState).as("database failure: %s", failure).isEqualTo("23514");
-                assertRepositoryCount(existing ? 1 : 0);
+                assertRepositoryCount(existing || conditional ? 1 : 0);
                 assertThat(observationCount()).isEqualTo(existing ? 1 : 0);
                 if (existing) assertThat(row(repoId(REPO_KEY, owner), owner.ownerUserId())).isEqualTo(before);
+                if (beforeRevision != null) {
+                    assertThat(service.getRevision(teamId, REPO_KEY, owner).revision()).isEqualTo(beforeRevision);
+                } else {
+                    assertThat(jdbc.queryForObject("""
+                            select count(*) from working_file_revisions v
+                            join team_repositories r on r.id = v.repo_id where r.team_id = ?
+                            """, Long.class, teamId)).isZero();
+                }
             } finally {
                 jdbc.execute("DROP TRIGGER " + name + " ON working_files");
             }
@@ -273,7 +278,7 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
                 futures.add(executor.submit(() -> {
                     ready.countDown();
                     if (!start.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Start timeout");
-                    service.replace(teamId, REPO_KEY, index % 2 == 0 ? owner : sameOwner,
+                    replace(teamId, REPO_KEY, index % 2 == 0 ? owner : sameOwner,
                             request("feature/" + index, "src/F" + index + ".java"));
                     return null;
                 }));
@@ -295,9 +300,8 @@ class WorkingFileIntegrationTest extends AbstractIntegrationTest {
         return new AgentPrincipal(saved.getId(), userId, targetTeam);
     }
 
-    private int upsert(long repoId, String branch, String files, Instant observedAt) {
-        return tx().execute(status -> workingFiles.upsert(repoId, owner.ownerUserId(), branch,
-                files, observedAt, observedAt.plusSeconds(90)));
+    private void replace(Long targetTeam, String key, AgentPrincipal actor, WorkingFileRequest input) {
+        service.replace(targetTeam, key, actor, input, null);
     }
 
     private TransactionTemplate tx() { return new TransactionTemplate(transactionManager); }

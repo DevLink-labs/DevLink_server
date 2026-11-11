@@ -14,6 +14,32 @@ public interface WorkingFileRevisionRepository extends JpaRepository<WorkingFile
 
 	@Modifying
 	@Query(value = """
+	        UPDATE working_file_revisions
+	        SET revision = :newRevision
+	        WHERE repo_id = :repoId
+	          AND user_id = :userId
+	        """, nativeQuery = true)
+	int updateRevision(
+	        @Param("repoId") Long repoId,
+	        @Param("userId") Long userId,
+	        @Param("newRevision") UUID newRevision);
+	
+	@Modifying
+	@Query(value = """
+	        UPDATE working_file_revisions
+	        SET revision = :newRevision
+	        WHERE repo_id = :repoId
+	          AND user_id = :userId
+	          AND revision = :expectedRevision
+	        """, nativeQuery = true)
+	int updateIfMatch(
+	        @Param("repoId") Long repoId,
+	        @Param("userId") Long userId,
+	        @Param("expectedRevision") UUID expectedRevision,
+	        @Param("newRevision") UUID newRevision);
+	
+	@Modifying
+	@Query(value = """
             INSERT INTO working_file_revisions (
             repo_id,
             user_id,

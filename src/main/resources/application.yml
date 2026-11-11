@@ -7,6 +7,8 @@ server:
                 http-only: true
                 same-site: lax
 devlink:
+    working-files:
+        require-if-match: ${WORKING_FILES_REQUIRE_IF_MATCH:false}
     task-message-sync:
         cursor-secret: ${TASK_MESSAGE_CURSOR_SECRET:}
     outbox:

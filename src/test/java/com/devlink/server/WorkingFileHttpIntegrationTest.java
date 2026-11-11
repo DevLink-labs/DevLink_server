@@ -17,6 +17,10 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import com.devlink.server.common.AgentTokenHash;
 import com.devlink.server.domain.agent.Agent;
@@ -297,6 +301,7 @@ class WorkingFileHttpIntegrationTest extends AbstractIntegrationTest {
     void rejectedUpdatesKeepExistingSnapshotAndTimestamps() throws Exception {
         success(put(validBody()));
         Map<String, Object> before = stored();
+        Map<String, Object> revisionBefore = revisionState();
         ObjectNode invalid = validBody();
         invalid.withArray("files").add(file(invalid).deepCopy());
         error(put(invalid), 400, "VALIDATION_FAILED");
@@ -304,6 +309,7 @@ class WorkingFileHttpIntegrationTest extends AbstractIntegrationTest {
                 HttpRequest.BodyPublishers.ofByteArray(paddedBody(LIMIT + 1)), "application/json"),
                 413, "PAYLOAD_TOO_LARGE");
         assertThat(stored()).isEqualTo(before);
+        assertThat(revisionState()).isEqualTo(revisionBefore);
     }
 
     @Test
@@ -352,6 +358,186 @@ class WorkingFileHttpIntegrationTest extends AbstractIntegrationTest {
             JsonNode currentUser = success(browser.send(builder("/api/v1/auth/users/me", null, null).GET().build(),
                     HttpResponse.BodyHandlers.ofString()));
             assertThat(currentUser.path("userId").asLong()).isEqualTo(browserUser.getId());
+        }
+    }
+
+    @Test
+    void conditionalPutReturnsNewRevisionAndCommitsTheEntireSnapshot() throws Exception {
+        UUID expected = getRevision();
+        ObjectNode body = validBody().put("branch", "feature/conditional");
+        file(body).put("relativePath", "src/Conditional.tsx");
+        UUID replacement = responseRevision(put(body, quoted(expected)));
+        assertThat(replacement).isNotEqualTo(expected).isEqualTo(getRevision());
+        assertThat(revisionState().get("revision")).isEqualTo(replacement);
+        assertThat(stored().get("branch_name")).isEqualTo("feature/conditional");
+        assertThat(json.readTree(stored().get("files").toString()).get(0).path("relativePath").asText())
+                .isEqualTo("src/Conditional.tsx");
+        assertNinetySecondExpiry();
+    }
+
+    @Test
+    void lateOlderPutReturns412AndPreservesTheNewerListTimestampsAndRevision() throws Exception {
+        UUID initial = getRevision();
+        ObjectNode newer = validBody().put("branch", "feature/newer");
+        file(newer).put("relativePath", "src/Newer.tsx");
+        UUID replacement = responseRevision(put(newer, quoted(initial)));
+        Map<String, Object> before = stored();
+        Map<String, Object> revisionBefore = revisionState();
+        ObjectNode older = validBody().put("branch", "feature/older");
+        file(older).put("relativePath", "src/Older.tsx");
+        error(put(older, quoted(initial)), 412, "WORKING_FILES_REVISION_MISMATCH");
+        assertThat(stored()).isEqualTo(before);
+        assertThat(revisionState()).isEqualTo(revisionBefore);
+        assertThat(getRevision()).isEqualTo(replacement);
+    }
+
+    @Test
+    void legacyPutKeepsNullResponseRotatesRevisionAndInvalidatesOlderConditionalRequests() throws Exception {
+        UUID initial = getRevision();
+        assertThat(success(put(validBody())).isNull()).isTrue();
+        UUID first = getRevision();
+        assertThat(first).isNotEqualTo(initial);
+        assertThat(success(put(validBody())).isNull()).isTrue();
+        UUID second = getRevision();
+        assertThat(second).isNotEqualTo(first);
+        Map<String, Object> before = stored();
+        error(put(validBody(), quoted(first)), 412, "WORKING_FILES_REVISION_MISMATCH");
+        assertThat(stored()).isEqualTo(before);
+        assertThat(getRevision()).isEqualTo(second);
+    }
+
+    @Test
+    void conditionalEmptyAndDetachedHeadObservationStillAdvancesRevision() throws Exception {
+        UUID first = responseRevision(put(validBody(), quoted(getRevision())));
+        ObjectNode empty = json.createObjectNode().putNull("branch");
+        empty.putArray("files");
+        UUID second = responseRevision(put(empty, quoted(first)));
+        assertThat(second).isNotEqualTo(first);
+        assertThat(stored().get("branch_name")).isNull();
+        assertThat(json.readTree(stored().get("files").toString()).isEmpty()).isTrue();
+        assertNinetySecondExpiry();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "*", "invalid", "00000000-0000-0000-0000-000000000000",
+            "\"1-1-1-1-1\"", "\"not-a-uuid\"", "W/\"00000000-0000-0000-0000-000000000000\"",
+            "\"00000000-0000-0000-0000-000000000000\", \"11111111-1111-1111-1111-111111111111\""})
+    void malformedIfMatchIsNotTreatedAsLegacyAndPreservesState(String header) throws Exception {
+        responseRevision(put(validBody(), quoted(getRevision())));
+        Map<String, Object> before = stored();
+        Map<String, Object> revisionBefore = revisionState();
+        error(put(validBody(), header), 400, "VALIDATION_FAILED");
+        assertThat(stored()).isEqualTo(before);
+        assertThat(revisionState()).isEqualTo(revisionBefore);
+    }
+
+    @Test
+    void repeatedIfMatchHeadersAreRejectedWithoutChangingState() throws Exception {
+        UUID expected = responseRevision(put(validBody(), quoted(getRevision())));
+        Map<String, Object> before = stored();
+        Map<String, Object> revisionBefore = revisionState();
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            error(client.send(builder(endpoint(teamId, REPO_KEY), bearer(), "application/json")
+                    .header("If-Match", quoted(expected)).header("If-Match", "*")
+                    .PUT(publisher(validBody())).build(), HttpResponse.BodyHandlers.ofString()),
+                    400, "VALIDATION_FAILED");
+        }
+        assertThat(stored()).isEqualTo(before);
+        assertThat(revisionState()).isEqualTo(revisionBefore);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void expiredOrDeletedObservationsDoNotMakeAnOlderRevisionValid(boolean deleted) throws Exception {
+        UUID initial = getRevision();
+        UUID current = responseRevision(put(validBody(), quoted(initial)));
+        Object repoId = stored().get("repo_id");
+        if (deleted) {
+            jdbc.update("delete from working_files where repo_id = ? and user_id = ?", repoId, ownerId);
+        } else {
+            jdbc.update("""
+                    update working_files set observed_at = now() - interval '180 seconds',
+                        expires_at = now() - interval '90 seconds' where repo_id = ? and user_id = ?
+                    """, repoId, ownerId);
+        }
+        Map<String, Object> before = deleted ? null : stored();
+        error(put(validBody(), quoted(initial)), 412, "WORKING_FILES_REVISION_MISMATCH");
+        assertThat(getRevision()).isEqualTo(current);
+        assertThat(observationCount()).isEqualTo(deleted ? 0 : 1);
+        if (!deleted) assertThat(stored()).isEqualTo(before);
+        assertThat(responseRevision(put(validBody(), quoted(current)))).isNotEqualTo(current);
+        assertNinetySecondExpiry();
+    }
+
+    @Test
+    void recreatedRevisionRejectsOldRequestWithoutRecordingFiles() throws Exception {
+        UUID initial = getRevision();
+        Object repoId = revisionState().get("repo_id");
+        jdbc.update("delete from working_file_revisions where repo_id = ? and user_id = ?", repoId, ownerId);
+        UUID recreated = getRevision();
+        assertThat(recreated).isNotEqualTo(initial);
+        error(put(validBody(), quoted(initial)), 412, "WORKING_FILES_REVISION_MISMATCH");
+        assertThat(getRevision()).isEqualTo(recreated);
+        assertThat(observationCount()).isZero();
+    }
+
+    @Test
+    void concurrentPutsWithOneRevisionHaveExactlyOneWinnerAndOneConsistentSnapshot() throws Exception {
+        UUID expected = getRevision();
+        CountDownLatch start = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(6)) {
+            var pending = IntStream.range(0, 6).mapToObj(index -> pool.submit(() -> {
+                assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+                ObjectNode body = validBody().put("branch", "feature/winner-" + index);
+                file(body).put("relativePath", "src/Winner" + index + ".tsx");
+                return Map.entry(index, put(body, quoted(expected)));
+            })).toList();
+            start.countDown();
+            int successes = 0;
+            for (var future : pending) {
+                var result = future.get(30, TimeUnit.SECONDS);
+                if (result.getValue().statusCode() == 200) {
+                    successes++;
+                    assertThat(responseRevision(result.getValue())).isEqualTo(getRevision()).isNotEqualTo(expected);
+                    assertThat(stored().get("branch_name")).isEqualTo("feature/winner-" + result.getKey());
+                    assertThat(json.readTree(stored().get("files").toString()).get(0).path("relativePath").asText())
+                            .isEqualTo("src/Winner" + result.getKey() + ".tsx");
+                } else {
+                    error(result.getValue(), 412, "WORKING_FILES_REVISION_MISMATCH");
+                }
+            }
+            assertThat(successes).isEqualTo(1);
+        } finally { start.countDown(); }
+        assertThat(observationCount()).isEqualTo(1);
+        assertNinetySecondExpiry();
+    }
+
+    private UUID getRevision() throws Exception {
+        return responseRevision(send("GET", "/api/v1/teams/" + teamId + "/git/working-files/" + REPO_KEY,
+                bearer(), HttpRequest.BodyPublishers.noBody(), null));
+    }
+    private UUID responseRevision(HttpResponse<String> response) throws Exception {
+        JsonNode data = success(response);
+        assertThat(data.path("protocolVersion").asInt()).isEqualTo(2);
+        return UUID.fromString(data.path("revision").asText());
+    }
+    private Map<String, Object> revisionState() {
+        return jdbc.queryForMap("""
+                select v.* from working_file_revisions v join team_repositories r on r.id = v.repo_id
+                where r.team_id = ? and r.origin_url_sha256 = ? and v.user_id = ?
+                """, teamId, REPO_KEY, ownerId);
+    }
+    private void assertNinetySecondExpiry() {
+        Map<String, Object> snapshot = stored();
+        assertThat(Duration.between(((Timestamp) snapshot.get("observed_at")).toInstant(),
+                ((Timestamp) snapshot.get("expires_at")).toInstant())).isEqualTo(Duration.ofSeconds(90));
+    }
+    private static String quoted(UUID revision) { return "\"" + revision + "\""; }
+    private HttpResponse<String> put(ObjectNode body, String ifMatch) throws Exception {
+        try (HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(5)).build()) {
+            return client.send(builder(endpoint(teamId, REPO_KEY), bearer(), "application/json")
+                    .header("If-Match", ifMatch).PUT(publisher(body)).build(), HttpResponse.BodyHandlers.ofString());
         }
     }
 
@@ -426,6 +612,10 @@ class WorkingFileHttpIntegrationTest extends AbstractIntegrationTest {
     private void assertNoWrites() {
         assertThat(repositoryCount()).isZero();
         assertThat(observationCount()).isZero();
+        assertThat(jdbc.queryForObject("""
+                select count(*) from working_file_revisions v join team_repositories r on r.id = v.repo_id
+                where r.team_id = ?
+                """, Long.class, teamId)).isZero();
     }
     private static String randomToken() {
         byte[] bytes = new byte[32];
