@@ -70,6 +70,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -113,6 +114,8 @@ class TaskNotificationIntegrationTest extends AbstractIntegrationTest {
     @Autowired private MutableClock clock;
     @Autowired private AtomicReference<Map<String, AgentPrincipal>> verifiedAgents;
     @MockitoSpyBean private TaskAckService acknowledgements;
+    // 이 테스트는 outbox 행 전체를 세므로 팀 Context 갱신 신호는 끈다. 그 신호는 TeamContextIntegrationTest가 검증한다.
+    @MockitoBean private com.devlink.server.service.TeamContextOutboxWriter teamContextOutbox;
     @LocalServerPort private int port;
     private Agent requester;
     private Agent receiver;
