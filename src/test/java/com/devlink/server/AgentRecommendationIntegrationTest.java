@@ -33,6 +33,8 @@ import com.devlink.server.domain.teammember.TeamMember;
 import com.devlink.server.domain.user.User;
 import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.CommitFileRepository;
+import com.devlink.server.repository.FileDependencyRepository;
+import com.devlink.server.repository.FileDependencyRepository.ImportingFileView;
 import com.devlink.server.repository.RepositoryCommitRepository;
 import com.devlink.server.repository.TeamGitRepositoryRepository;
 import com.devlink.server.repository.TeamMemberRepository;
@@ -51,9 +53,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.awaitility.Awaitility.await;
 
 /** 담당 Agent 추천 API를 실제 PostgreSQL과 Agent 토큰 인증으로 검증한다. */
@@ -63,6 +67,8 @@ class AgentRecommendationIntegrationTest extends AbstractIntegrationTest {
     private static final String RELATED_PATH = "src/auth/RefreshTokenController.java";
 
     @LocalServerPort private int port;
+    @Autowired private JdbcTemplate jdbc;
+    @Autowired private FileDependencyRepository dependencies;
     @Autowired private UserRepository users;
     @Autowired private TeamRepository teams;
     @Autowired private TeamMemberRepository members;
@@ -337,6 +343,56 @@ class AgentRecommendationIntegrationTest extends AbstractIntegrationTest {
         ((ObjectNode) expected.path("candidates").get(0))
                 .put("connectionStatus", "ONLINE");
         assertThat(connected.path("candidates")).isEqualTo(expected.path("candidates"));
+    }
+
+    @Test
+    void importExpansionUsesCurrentSnapshotAndWeightsIndirectEvidence() throws Exception {
+        String importer = "src/web/CheckoutController.java";
+        String sha = "a".repeat(40);
+        Long repo = new TransactionTemplate(transactionManager).execute(tx -> {
+            Long id = repositories.saveAndFlush(TeamGitRepository.create(team.getId(), "b".repeat(64))).getId();
+            file(commit(id, requester.ownerUserId(), now.minusSeconds(1)), RELATED_PATH);
+            file(commit(id, agentB.ownerUserId(), now.minusSeconds(1)), importer);
+            working(id, agentB.ownerUserId(), now, List.of(importer));
+            jdbc.update("""
+                    insert into repository_dependency_graphs
+                        (repo_id, display_name, branch_name, repo_kind, analysis_commit_sha,
+                         analysis_version, analyzed_at, graph)
+                    values (?, 'test', 'main', 'BACKEND', ?, 1, now(), '{"nodes":[],"edges":[]}'::jsonb)
+                    """, id, sha);
+            for (String relation : List.of("IMPORT", "CALLS")) {
+                jdbc.update("""
+                        insert into file_dependencies
+                            (repo_id, source_relative_path, target_relative_path,
+                             relation_type, analysis_commit_sha, observed_at)
+                        values (?, ?, ?, ?, ?, now())
+                        """, id, relation.equals("IMPORT") ? importer : "ignored.java", RELATED_PATH, relation, sha);
+            }
+            jdbc.update("""
+                    insert into file_dependencies
+                        (repo_id, source_relative_path, target_relative_path,
+                         relation_type, analysis_commit_sha, observed_at)
+                    values (?, 'old.java', ?, 'IMPORT', ?, now())
+                    """, id, RELATED_PATH, "c".repeat(40));
+            return id;
+        });
+        assertThat(dependencies.findImportingFiles(team.getId(), repo, List.of(RELATED_PATH)))
+                .extracting(ImportingFileView::getSourcePath)
+                .containsExactly(importer);
+        assertThat(dependencies.findImportingFiles(otherTeam.getId(), repo, List.of(RELATED_PATH))).isEmpty();
+
+        JsonNode response = assertSuccess(post(team.getId(), requester.token(), body("refreshToken", null)));
+        JsonNode candidate = response.path("candidates").get(0);
+        assertThat(candidate.path("agentId").asLong()).isEqualTo(agentB.id());
+        assertThat(candidate.path("scores").path("working").asDouble()).isEqualTo(7.5);
+        assertThat(candidate.path("scores").path("frequency").asDouble()).isEqualTo(1.5);
+        assertThat(candidate.path("scores").path("recency").asDouble())
+                .isCloseTo(5.0, within(0.01));
+        JsonNode file = candidate.path("relatedFiles").get(0);
+        assertThat(file.path("relativePath").asText()).isEqualTo(importer);
+        List<String> fields = new ArrayList<>();
+        file.fieldNames().forEachRemaining(fields::add);
+        assertThat(fields).containsExactlyInAnyOrder("repoId", "relativePath", "sources", "observedAt");
     }
 
     private HttpResponse<String> post(Long teamId, String token, String body) throws Exception {

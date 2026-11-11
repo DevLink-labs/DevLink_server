@@ -44,6 +44,7 @@ public class AgentRecommendationService {
             .thenComparing(candidate -> candidate.agent().getId());
     private static final Comparator<RelatedFile> RELATED_FILE_ORDER = Comparator
             .comparing(RelatedFile::working).reversed()
+            .thenComparing(Comparator.comparingDouble(RelatedFile::weight).reversed())
             .thenComparing(RelatedFile::observedAt, Comparator.reverseOrder())
             .thenComparing(file -> file.path().repoId())
             .thenComparing(file -> file.path().relativePath());
@@ -147,9 +148,10 @@ public class AgentRecommendationService {
             Instant evaluatedAt) {
         List<String> matchedRoles = RecommendationRoleMatcher.matchedRoles(agent, questionTokens);
         double role = RecommendationScorePolicy.role(matchedRoles.size());
-        double working = RecommendationScorePolicy.working(evidence.isWorkingOnRelatedFile());
-        double frequency = RecommendationScorePolicy.frequency(evidence.distinctCommitCount());
-        double recency = RecommendationScorePolicy.recency(evidence.latestCommitAt(), evaluatedAt);
+        double working = RecommendationScorePolicy.working(evidence.workingWeight());
+        double frequency = RecommendationScorePolicy.frequency(evidence.weightedCommitCount());
+        double recency = RecommendationScorePolicy.recency(evidence.strongestCommitAt(), evaluatedAt)
+                * evidence.strongestCommitWeight();
         return new ScoredCandidate(agent, matchedRoles, evidence, role, working, frequency, recency);
     }
 
