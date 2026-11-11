@@ -137,7 +137,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/signup", "/api/v1/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf",
                                 "/api/v1/health", "/actuator/health").permitAll()
-                        .requestMatchers("/api/v1/auth/users/me", "/api/v1/auth/users/me/git-identity").hasRole("USER")
+                        .requestMatchers("/api/v1/auth/users/me", "/api/v1/auth/users/me/git-identity",
+                                "/api/v1/web/events").hasRole("USER")
                         .requestMatchers("/api/v1/teams", "/api/v1/teams/**", "/api/v1/agents/**")
                                 .hasRole("USER")
                         .requestMatchers("/api/**").authenticated()
@@ -181,7 +182,7 @@ public class SecurityConfig {
         configuration.setAllowedOrigins(allowedOrigins);
         configuration.setAllowedMethods(List.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of(
-                "Accept", "Authorization", "Content-Type", "X-CSRF-TOKEN", "X-XSRF-TOKEN"));
+                "Accept", "Authorization", "Content-Type", "Last-Event-ID", "X-CSRF-TOKEN", "X-XSRF-TOKEN"));
         configuration.setExposedHeaders(List.of("X-CSRF-TOKEN", "X-XSRF-TOKEN"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);

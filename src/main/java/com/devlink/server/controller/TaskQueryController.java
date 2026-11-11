@@ -36,8 +36,11 @@ public class TaskQueryController {
     		@PathVariable @Positive Long teamId,
     		@PathVariable @Positive Long taskId,
     		@AuthenticationPrincipal UserPrincipal user,
-    		@Valid @ModelAttribute TaskEventListRequest request){
-    	WebTaskHistoryResponse response = taskQueryService.getWebTaskHistory(teamId, taskId, user, request);
+            @Valid @ModelAttribute TaskEventListRequest request,
+            @org.springframework.web.bind.annotation.RequestParam(required = false)
+            @jakarta.validation.constraints.Pattern(regexp = "0|[1-9][0-9]{0,18}")
+            @jakarta.validation.constraints.DecimalMax("9223372036854775807") String afterSequence){
+        WebTaskHistoryResponse response = taskQueryService.getWebTaskHistory(teamId, taskId, user, request, afterSequence);
     	
     	return ResponseEntity.ok(ApiResponse.success(response));
     	
