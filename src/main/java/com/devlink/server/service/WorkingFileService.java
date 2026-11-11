@@ -1,5 +1,6 @@
 package com.devlink.server.service;
 
+import org.springframework.beans.factory.annotation.Value;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -14,6 +15,10 @@ import com.devlink.server.repository.WorkingFileRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import java.util.UUID;
+import com.devlink.server.domain.gitrepo.WorkingFileId;
+import com.devlink.server.dto.gitcollection.WorkingFileRevisionResponse;
+import com.devlink.server.repository.WorkingFileRevisionRepository;
 
 @Service
 @RequiredArgsConstructor
@@ -25,17 +30,60 @@ public class WorkingFileService {
 	private final TeamGitRepositoryRepository repositories;
 	private final WorkingFileRepository workingFiles;
 	private final ObjectMapper objectMapper;
+	private final WorkingFileRevisionRepository revisions;
+	
+	@Value("${devlink.working-files.require-if-match:false}")
+	private boolean requireIfMatch;
 	
 	@Transactional
-	public void replace(
+	public WorkingFileRevisionResponse getRevision(
+			Long teamId,
+			String repoKey,
+			AgentPrincipal principal) {
+		
+		validateAccess(teamId, principal);
+		validator.validateRepoKey(repoKey);
+		teams.requireTeamMember(principal.ownerUserId(), teamId);
+		
+		repositories.insertIfAbsent(teamId, repoKey);
+		
+		var repository = repositories
+				.findByTeamIdAndOriginUrlSha256(teamId, repoKey)
+				.orElseThrow(() ->
+					new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR));
+		
+		Long repoId = repository.getId();
+		Long userId = principal.ownerUserId();
+		
+		revisions.insertIfAbsent(repoId, userId, UUID.randomUUID());
+		
+		var current = revisions
+				.findById(new WorkingFileId(repoId, userId))
+				.orElseThrow(() ->
+				new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR));
+		
+		return new WorkingFileRevisionResponse(
+				2,
+				current.getRevision());
+	}
+	
+	@Transactional
+	public WorkingFileRevisionResponse replace(
 			Long teamId,
 			String repoKey,
 			AgentPrincipal principal,
-			WorkingFileRequest request) {
+			WorkingFileRequest request,
+			String ifMatch) {
 		
 		validateAccess(teamId, principal);
 		validator.validate(repoKey, request);
 		teams.requireTeamMember(principal.ownerUserId(), teamId);
+		
+		UUID expectedRevision = validator.parseIfMatch(ifMatch);
+		
+		if(requireIfMatch && expectedRevision == null) {
+			throw new BusinessException(ErrorCode.WORKING_FILES_PRECONDITION_REQUIRED);
+		}
 		
 		List<WorkingFileEntry> files = request.files().stream()
 				.map(file -> new WorkingFileEntry(
@@ -52,16 +100,44 @@ public class WorkingFileService {
 				.orElseThrow(() ->
 				new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR));
 		
-		Instant observedAt = Instant.now();
-		Instant expiresAt = observedAt.plusSeconds(EXPIRY_SECONDS);
+		Long repoId = repository.getId();
+		Long userId = principal.ownerUserId();
 		
-		workingFiles.upsert(
-				repository.getId(),
-				principal.ownerUserId(),
-				request.branch(),
-				filesJson,
-				observedAt,
-				expiresAt);
+		revisions.insertIfAbsent(repoId, userId, UUID.randomUUID());
+		
+		UUID newRevision = UUID.randomUUID();
+		
+		int updated;
+		
+		if(expectedRevision == null) {
+			updated = revisions.updateRevision(repoId, userId, newRevision);
+		}else {
+			updated = revisions.updateIfMatch(repoId, userId, expectedRevision, newRevision);
+			
+			if(updated == 0) {
+				throw new BusinessException(ErrorCode.WORKING_FILES_REVISION_MISMATCH);
+			}
+		}
+		
+		if(updated != 1) {
+			throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
+		}
+		
+		Instant observedAt = Instant.now();
+	    Instant expiresAt = observedAt.plusSeconds(EXPIRY_SECONDS);
+
+	    int saved = workingFiles.upsert(
+	            repoId,
+	            userId,
+	            request.branch(),
+	            filesJson,
+	            observedAt,
+	            expiresAt);
+	    
+	    if(saved != 1) {
+	    	throw new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR);
+	    }
+	    return new WorkingFileRevisionResponse(2,newRevision);
 	}
 	
 	private void validateAccess(Long teamId, AgentPrincipal principal) {

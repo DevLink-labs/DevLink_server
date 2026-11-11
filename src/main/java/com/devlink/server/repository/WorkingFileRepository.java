@@ -45,7 +45,6 @@ public interface WorkingFileRepository extends JpaRepository<WorkingFile, Workin
                 files = EXCLUDED.files,
                 observed_at = EXCLUDED.observed_at,
                 expires_at = EXCLUDED.expires_at
-            WHERE working_files.observed_at <= EXCLUDED.observed_at
             """, nativeQuery = true)
     int upsert(
             @Param("repoId") Long repoId,
