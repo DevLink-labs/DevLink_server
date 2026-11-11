@@ -9,5 +9,12 @@ devlink:
     outbox:
         # 기존 저장 테스트는 PENDING을 검증하므로 자동 발행 대신 테스트가 명시적으로 실행한다.
         publisher-enabled: false
+    team-context:
+        # 갱신기는 테스트가 명시적으로 실행한다. 추론은 구조 신호 전용으로 둔다.
+        enabled: false
+        inference:
+            base-url: ""
+            api-key: ""
+            model: ""
     websocket:
         allowed-origins: http://localhost:3000

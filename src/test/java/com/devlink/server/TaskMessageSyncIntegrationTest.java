@@ -344,7 +344,7 @@ class TaskMessageSyncIntegrationTest extends AbstractIntegrationTest {
                 connection.setSchema("public");
             }
         }
-        Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).load().migrate();
+        Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).target("7").load().migrate();
         try (Connection connection = dataSource.getConnection()) {
             connection.setSchema(schema);
             try (var statement = connection.createStatement(); var rows = statement.executeQuery(

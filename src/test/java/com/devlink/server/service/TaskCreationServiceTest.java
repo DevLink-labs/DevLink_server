@@ -38,7 +38,8 @@ class TaskCreationServiceTest {
         TaskEventRepository history = mock(TaskEventRepository.class);
         TaskRoutingService routing = mock(TaskRoutingService.class);
         AgentRepository agents = mock(AgentRepository.class);
-        var service = new TaskCreationService(tasks, history, agents, routing, transactionManager());
+        var service = new TaskCreationService(tasks, history, agents, routing,
+                mock(TeamContextOutboxWriter.class), transactionManager());
         Agent agent = mock(Agent.class);
         when(agent.getTeamId()).thenReturn(31L);
         when(agent.getOwnerUserId()).thenReturn(21L);
@@ -78,7 +79,7 @@ class TaskCreationServiceTest {
         TaskEventRepository history = mock(TaskEventRepository.class);
         TaskRoutingService routing = mock(TaskRoutingService.class);
         var service = new TaskCreationService(tasks, history, mock(AgentRepository.class),
-                routing, transactionManager());
+                routing, mock(TeamContextOutboxWriter.class), transactionManager());
         Task task = mock(Task.class);
         when(task.getId()).thenReturn(7L);
         when(tasks.findByIdForUpdate(7L)).thenReturn(Optional.of(task));

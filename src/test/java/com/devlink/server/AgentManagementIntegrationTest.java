@@ -13,6 +13,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import com.devlink.server.domain.agent.AgentPart;
 import com.devlink.server.domain.agent.AgentStatus;
@@ -26,17 +29,23 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mockingDetails;
 
 class AgentManagementIntegrationTest extends AbstractIntegrationTest {
     @LocalServerPort private int port;
     @Autowired private ObjectMapper json;
     @Autowired private AgentRepository agents;
     @Autowired private TeamMemberRepository members;
-    @Autowired private TaskRepository tasks;
+    @MockitoSpyBean private TaskRepository tasks;
 
     @Test
     void registeringAgentUsesAuthenticatedOwnerAndReturnsOfflineProfileWithoutCredential() throws Exception {
@@ -239,6 +248,65 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
         }
     }
 
+    @ParameterizedTest
+    @EnumSource(TaskParticipant.class)
+    void deletingBeforeTaskInsertMakesCreationReturnNotFound(TaskParticipant participant) throws Exception {
+        try (var owner = new Browser()) {
+            var fixture = owner.prepareTaskRequest();
+            long agentId = fixture.agentId(participant);
+            var csrf = owner.csrf();
+            var beforeInsert = new CountDownLatch(1);
+            var resumeInsert = new CountDownLatch(1);
+            // 발신·수신 Agent 조회가 끝난 작업을 실제 INSERT 직전에 대기
+            doAnswer(invocation -> {
+                beforeInsert.countDown();
+                if (!resumeInsert.await(15, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Timed out waiting for the Agent deletion");
+                }
+                // 저장소 프록시를 통한 실제 저장 및 예외 변환 수행
+                return mockingDetails(invocation.getMock()).getMockCreationSettings()
+                        .getDefaultAnswer().answer(invocation);
+            }).when(tasks).save(argThat((Task task) -> task != null && fixture.requestKey().equals(task.getRequestKey())));
+
+            try (var executor = Executors.newSingleThreadExecutor()) {
+                var creation = executor.submit(() -> createTask(fixture));
+                try {
+                    assertThat(beforeInsert.await(5, TimeUnit.SECONDS)).as("작업 저장 직전 도달").isTrue();
+                    assertSuccess(owner.send("DELETE", "/api/v1/agents/" + agentId, null, csrf), 200);
+                } finally {
+                    resumeInsert.countDown();
+                }
+                assertError(creation.get(10, TimeUnit.SECONDS), 404, "RESOURCE_NOT_FOUND");
+            }
+
+            assertThat(agents.existsById(agentId)).isFalse();
+            assertThat(agents.findByTeamId(fixture.teamId())).hasSize(1);
+            assertThat(tasks.findByTeamIdOrderByCreatedAtDesc(fixture.teamId())).isEmpty();
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(TaskParticipant.class)
+    void deletingAfterTaskCommitReturnsConflictEvenWithStaleTaskCheck(TaskParticipant participant) throws Exception {
+        try (var owner = new Browser()) {
+            var fixture = owner.prepareTaskRequest();
+            long agentId = fixture.agentId(participant);
+            var creation = createTask(fixture);
+            assertSuccess(creation, 201);
+            long taskId = creation.body().path("data").path("taskId").asLong();
+
+            // 작업 커밋 전 사전 조회 결과를 재현하고 삭제는 실제 외래키로 검증
+            doReturn(false).when(tasks).existsByRequesterAgentIdOrReceiverAgentId(agentId, agentId);
+            assertError(owner.mutate("DELETE", "/api/v1/agents/" + agentId, null), 409, "AGENT_HAS_TASKS");
+
+            assertThat(agents.existsById(fixture.requesterId())).isTrue();
+            assertThat(agents.existsById(fixture.receiverId())).isTrue();
+            var stored = tasks.findById(taskId).orElseThrow();
+            assertThat(stored.getRequesterAgentId()).isEqualTo(fixture.requesterId());
+            assertThat(stored.getReceiverAgentId()).isEqualTo(fixture.receiverId());
+        }
+    }
+
     @Test
     void deletingAgentRequiresUserSessionCsrfAndValidId() throws Exception {
         try (var owner = new Browser(); var anonymous = new Browser()) {
@@ -288,11 +356,11 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
             assertSuccess(issued, 201);
             String token = issued.body().path("data").path("token").asText();
 
-            var agentList = agentGet(listPath, token);
+            var agentList = agentRequest("GET", listPath, token, null);
             assertSuccess(agentList, 200);
             assertThat(agentList.body().path("data")).isEqualTo(sessionList.body().path("data"));
 
-            var me = agentGet("/api/v1/agents/me", token);
+            var me = agentRequest("GET", "/api/v1/agents/me", token, null);
             assertSuccess(me, 200);
             assertThat(me.body().path("data").path("agentId").asLong()).isEqualTo(agentId);
             assertRoutingMetadata(me.body().path("data"), "BACKEND", roles);
@@ -415,12 +483,22 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
         assertThat(profile.path("roles")).isEqualTo(json.valueToTree(roles));
     }
 
-    private HttpResult agentGet(String path, String token) throws Exception {
+    private HttpResult createTask(TaskRequestFixture fixture) throws Exception {
+        return agentRequest("POST", "/api/v1/tasks/" + fixture.teamId(), fixture.token(), Map.of(
+                "requestKey", fixture.requestKey(), "receiverAgentId", fixture.receiverId(), "prompt", "Task creation race"));
+    }
+
+    private HttpResult agentRequest(String method, String path, String token, Object body) throws Exception {
         try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build()) {
             var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
-                    .timeout(Duration.ofSeconds(10)).header("Accept", "application/json")
-                    .header("Authorization", "Bearer " + token).GET().build();
-            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                    .timeout(Duration.ofSeconds(20)).header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + token);
+            if (body != null) {
+                request.header("Content-Type", "application/json");
+            }
+            request.method(method, body == null ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
+            var response = client.send(request.build(), HttpResponse.BodyHandlers.ofString());
             return new HttpResult(response.statusCode(), json.readTree(response.body()));
         }
     }
@@ -479,6 +557,14 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
 
     private record Csrf(String headerName, String token) { }
 
+    private enum TaskParticipant { REQUESTER, RECEIVER }
+
+    private record TaskRequestFixture(long teamId, long requesterId, long receiverId, String token, String requestKey) {
+        private long agentId(TaskParticipant participant) {
+            return participant == TaskParticipant.REQUESTER ? requesterId : receiverId;
+        }
+    }
+
     private final class Browser implements AutoCloseable {
         private final HttpClient client = HttpClient.newBuilder()
                 .cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL))
@@ -507,6 +593,17 @@ class AgentManagementIntegrationTest extends AbstractIntegrationTest {
                     registrationField("name", "Agent " + UUID.randomUUID()));
             assertSuccess(response, 201);
             return response.body().path("data").path("agentId").asLong();
+        }
+
+        private TaskRequestFixture prepareTaskRequest() throws Exception {
+            signupAndLogin();
+            long teamId = createTeam();
+            long requesterId = createAgent(teamId);
+            long receiverId = createAgent(teamId);
+            var issued = mutate("POST", "/api/v1/agents/" + requesterId + "/token", null);
+            assertSuccess(issued, 201);
+            return new TaskRequestFixture(teamId, requesterId, receiverId,
+                    issued.body().path("data").path("token").asText(), UUID.randomUUID().toString());
         }
 
         private HttpResult get(String path) throws Exception {

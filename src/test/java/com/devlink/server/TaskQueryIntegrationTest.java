@@ -390,7 +390,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
         List<String> fields = new ArrayList<>();
         data.fieldNames().forEachRemaining(fields::add);
         assertThat(fields).containsExactlyInAnyOrder("taskId", "prompt", "resultText", "failureReason",
-                "rejectionReason", "partiallyModified", "taskFiles", "items", "nextBeforeSequence", "hasNext");
+                "rejectionReason", "partiallyModified", "taskFiles", "items", "nextBeforeSequence", "hasNext", "nextAfterSequence");
         assertThat(data.path("taskId").asLong()).isEqualTo(taskId);
         assertThat(data.path("items").isArray()).isTrue();
         List<String> actual = new ArrayList<>();
@@ -401,6 +401,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
         });
         assertThat(actual).containsExactly(sequences);
         assertNullableText(data.path("nextBeforeSequence"), cursor);
+        assertNullableText(data.path("nextAfterSequence"), null);
         assertThat(data.path("hasNext").isBoolean()).isTrue();
         assertThat(data.path("hasNext").asBoolean()).isEqualTo(hasNext);
     }

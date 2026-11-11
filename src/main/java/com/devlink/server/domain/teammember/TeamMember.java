@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 
 // Bounded context: identity.
 @Entity
+@EntityListeners(com.devlink.server.realtime.WebEventEntityListener.class)
 @Table(name = "team_members", uniqueConstraints = @UniqueConstraint(name = "uk_team_members", columnNames = {"team_id", "user_id"}))
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)

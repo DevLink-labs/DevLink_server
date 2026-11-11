@@ -40,15 +40,17 @@ public class TaskCreationService {
     private final TaskEventRepository taskEventRepository;
     private final AgentRepository agentRepository;
     private final TaskRoutingService taskRoutingService;
+    private final TeamContextOutboxWriter teamContextOutbox;
     private final TransactionTemplate transaction;
 
     public TaskCreationService(TaskRepository taskRepository, TaskEventRepository taskEventRepository,
             AgentRepository agentRepository, TaskRoutingService taskRoutingService,
-            PlatformTransactionManager transactionManager) {
+            TeamContextOutboxWriter teamContextOutbox, PlatformTransactionManager transactionManager) {
         this.taskRepository = taskRepository;
         this.taskEventRepository = taskEventRepository;
         this.agentRepository = agentRepository;
         this.taskRoutingService = taskRoutingService;
+        this.teamContextOutbox = teamContextOutbox;
         transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -62,6 +64,9 @@ public class TaskCreationService {
             // 트랜잭션 시작 → Task(PENDING) + TaskEvent(CREATED) 저장 → 커밋
             creation = transaction.execute(tx -> createTask(teamId, agentId, request, taskSummary));
         } catch (DataIntegrityViolationException exception) {
+            if (TaskAgentForeignKeys.isViolatedBy(exception)) {
+                throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+            }
             // 요청 키 유니크 제약 위반만 복구한다. 다른 제약 오류는 중복 요청으로 보지 않는다.
             if (!isRequestKeyConflict(exception)) {
                 throw exception;
@@ -200,7 +205,9 @@ public class TaskCreationService {
         Task task = taskRepository.save(Task.create(request.requestKey(), teamId,
                 agentId, userId, request.receiverAgentId(), request.prompt(), taskSummary));
         // 3-2. TaskEvent(생성 이력) 저장
-        taskEventRepository.save(TaskEvent.of(task.getId(), TaskEventType.CREATED, null));
+        TaskEvent created = taskEventRepository.save(TaskEvent.of(task.getId(), TaskEventType.CREATED, null));
+        // 3-3. 팀 Context 갱신 신호를 같은 트랜잭션에 저장 (실패 시 작업 생성도 롤백)
+        teamContextOutbox.enqueue(task, created);
         return new Creation(task, false);
     }
 
