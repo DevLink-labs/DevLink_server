@@ -25,8 +25,8 @@ class RecommendationScorePolicyTest {
 
     @Test
     void workingScoreIsFifteenRegardlessOfFileCount() {
-        assertThat(RecommendationScorePolicy.working(true)).isEqualTo(15.0);
-        assertThat(RecommendationScorePolicy.working(false)).isZero();
+        assertThat(RecommendationScorePolicy.working(1.0)).isEqualTo(15.0);
+        assertThat(RecommendationScorePolicy.working(0.0)).isZero();
     }
 
     @ParameterizedTest
@@ -43,6 +43,15 @@ class RecommendationScorePolicyTest {
         assertThat(halfDay).isCloseTo(10 * Math.pow(2, -0.5 / 14), within(1e-9));
         assertThat(RecommendationScorePolicy.recency(NOW.plusSeconds(60), NOW)).isEqualTo(10.0);
         assertThat(RecommendationScorePolicy.recency(null, NOW)).isZero();
+    }
+
+    @Test
+    void weightedWorkingAndFrequencyRemainWithinOriginalCaps() {
+        assertThat(RecommendationScorePolicy.working(0.5)).isEqualTo(7.5);
+        assertThat(RecommendationScorePolicy.working(2.0)).isEqualTo(15.0);
+        assertThat(RecommendationScorePolicy.frequency(0.5)).isEqualTo(1.5);
+        assertThat(RecommendationScorePolicy.frequency(1.5)).isEqualTo(4.5);
+        assertThat(RecommendationScorePolicy.frequency(6.5)).isEqualTo(15.0);
     }
 
     @Test
