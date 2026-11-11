@@ -27,6 +27,34 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
             """, nativeQuery = true)
     List<OutboxEvent> findNextTaskNotification(@Param("now") Instant now);
 
+    // 점유 불가 상태인 선행 행도 같은 쌍을 막는다. 파트 정보가 없는 기존 행은 팀 단위로 순서를 지킨다.
+    @Query(value = """
+            SELECT candidate.* FROM outbox_events candidate
+            WHERE candidate.destination = 'team-context'
+              AND ((candidate.status = 'PENDING' AND candidate.available_at <= :now)
+                OR (candidate.status = 'PROCESSING' AND candidate.locked_until <= :now))
+              AND NOT EXISTS (
+                  SELECT 1 FROM outbox_events earlier
+                  WHERE earlier.destination = 'team-context'
+                    AND earlier.aggregate_id = candidate.aggregate_id
+                    AND earlier.status IN ('PENDING', 'PROCESSING')
+                    AND (earlier.context_order IS NULL OR candidate.context_order IS NULL
+                         OR earlier.message_key = candidate.message_key)
+                    AND (COALESCE(earlier.context_order, 0), earlier.created_at, earlier.outbox_id)
+                      < (COALESCE(candidate.context_order, 0), candidate.created_at, candidate.outbox_id)
+              )
+            ORDER BY COALESCE(candidate.context_order, 0), candidate.created_at, candidate.outbox_id
+            LIMIT 1 FOR UPDATE OF candidate SKIP LOCKED
+            """, nativeQuery = true)
+    List<OutboxEvent> findNextTeamContextEvent(@Param("now") Instant now);
+
+    // 같은 쌍에 순번을 할당하는 트랜잭션은 커밋 순서도 직렬화한다.
+    @Query(value = """
+            SELECT nextval('team_context_outbox_order_seq')
+            FROM pg_advisory_xact_lock(hashtextextended(:pairKey, 0))
+            """, nativeQuery = true)
+    long nextTeamContextOrder(@Param("pairKey") String pairKey);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<OutboxEvent> findByOutboxIdAndLockTokenAndStatus(UUID outboxId, UUID lockToken, OutboxStatus status);
 }

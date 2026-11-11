@@ -31,6 +31,10 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://devlinkfrontend.vercel.app,https://devlink.ai.kr}
       WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS}
       TASK_MESSAGE_CURSOR_SECRET: ${TASK_MESSAGE_CURSOR_SECRET:-}
+      UPSTAGE_API_KEY: ${UPSTAGE_API_KEY:-}
+      TEAM_CONTEXT_INFERENCE_BASE_URL: ${TEAM_CONTEXT_INFERENCE_BASE_URL:-https://api.upstage.ai/v1}
+      TEAM_CONTEXT_INFERENCE_MODEL: ${TEAM_CONTEXT_INFERENCE_MODEL:-solar-pro4}
+      TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD: ${TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD:-false}
     depends_on:
       postgres:
         condition: service_healthy

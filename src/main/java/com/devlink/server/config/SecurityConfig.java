@@ -91,16 +91,13 @@ public class SecurityConfig {
         				"/api/v1/tasks/*/complete"
         				)
                 // 담당 Agent 추천은 Agent 토큰 전용 경로다.
-        		.requestMatchers(
-        		        HttpMethod.POST,
-        		        "/api/v1/teams/*/agents/recommendations",
-        		        "/api/v1/teams/*/git/file-dependencies:batch")
-        		.requestMatchers(
-        		        HttpMethod.GET,
-        		        "/api/v1/teams/*/git/dependency-sources/*")
-        		.requestMatchers("/api/v1/teams/*/git/commits:batch",
-        				"/api/v1/teams/*/git/working-files/*",
-        				 "/api/v1/teams/*/git/dependency-graph/working-files/*"))
+                .requestMatchers(HttpMethod.POST, "/api/v1/teams/*/agents/recommendations",
+                        "/api/v1/teams/*/git/file-dependencies:batch")
+                .requestMatchers(HttpMethod.GET, "/api/v1/teams/*/git/dependency-sources/*",
+                        "/api/v1/teams/*/context")
+                .requestMatchers("/api/v1/teams/*/git/commits:batch",
+                        "/api/v1/teams/*/git/working-files/*",
+                        "/api/v1/teams/*/git/dependency-graph/working-files/*"))
                 .cors(cors -> cors.configurationSource(apiCorsConfigurationSource(allowedOrigins)))
                 // Agent 토큰 인증 시 기존 사용자 세션 ID 변경 방지
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
