@@ -26,13 +26,15 @@ public class AgentService {
     private final TeamAuthorizationService authorization;
     private final TaskRepository tasks;
     private final ApplicationEventPublisher events;
+    private final AgentPresenceService presence;
 
     public AgentService(AgentRepository agents, TeamAuthorizationService authorization,
-            TaskRepository tasks, ApplicationEventPublisher events) {
+            TaskRepository tasks, ApplicationEventPublisher events, AgentPresenceService presence) {
         this.agents = agents;
         this.authorization = authorization;
         this.tasks = tasks;
         this.events = events;
+        this.presence = presence;
     }
 
     @Transactional
@@ -65,7 +67,9 @@ public class AgentService {
         List<Agent> teamAgents = ownedByMe
                 ? agents.findUserAgentInTeam(teamId, userId)
                 : agents.findAllByTeamIdOrderByIdAsc(teamId);
-        return teamAgents.stream().map(AgentResponse::from).toList();
+        return teamAgents.stream()
+                .map(agent -> AgentResponse.from(agent, presence.connectionStatus(agent)))
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -78,7 +82,7 @@ public class AgentService {
                     return new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
                 });
         authorization.requireTeamMember(userId, agent.getTeamId());
-        return AgentResponse.from(agent);
+        return AgentResponse.from(agent, presence.connectionStatus(agent));
     }
 
     @Transactional
