@@ -32,6 +32,10 @@ public enum ErrorCode {
     PAYLOAD_TOO_LARGE(
             HttpStatus.PAYLOAD_TOO_LARGE,
             "요청 본문 또는 커밋 개수 제한을 초과했습니다."),
+    WORKING_FILES_REVISION_MISMATCH(HttpStatus.PRECONDITION_FAILED,
+    		 "작업 파일 revision이 변경되었습니다. 최신 revision과 Git 상태를 다시 조회해주세요."),
+    WORKING_FILES_PRECONDITION_REQUIRED(HttpStatus.PRECONDITION_REQUIRED,
+    		"작업 파일 저장에는 If-Match 헤더가 필요합니다."),
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 오류가 발생했습니다.");

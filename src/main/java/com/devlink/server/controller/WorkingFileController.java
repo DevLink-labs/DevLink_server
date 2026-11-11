@@ -12,6 +12,10 @@ import com.devlink.server.domain.AgentPrincipal;
 import com.devlink.server.dto.gitcollection.WorkingFileRequest;
 import com.devlink.server.service.WorkingFileService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import com.devlink.server.dto.gitcollection.WorkingFileRevisionResponse;
 
 @RestController
 @RequestMapping("/api/v1/teams/{teamId}/git")
@@ -19,6 +23,22 @@ import lombok.RequiredArgsConstructor;
 public class WorkingFileController {
 	
 	private final WorkingFileService service;
+	
+	@GetMapping(
+	        value = "/working-files/{repoKey}",
+	        produces = MediaType.APPLICATION_JSON_VALUE)
+	public ResponseEntity<ApiResponse<WorkingFileRevisionResponse>> getRevision(
+	        @PathVariable Long teamId,
+	        @PathVariable String repoKey,
+	        @AuthenticationPrincipal AgentPrincipal principal) {
+
+	    WorkingFileRevisionResponse response =
+	            service.getRevision(teamId, repoKey, principal);
+
+	    return ResponseEntity.ok()
+	            .cacheControl(CacheControl.noStore())
+	            .body(ApiResponse.success(response));
+	}
 	
 	@PutMapping(
 			value = {"/working-files/{repoKey}",

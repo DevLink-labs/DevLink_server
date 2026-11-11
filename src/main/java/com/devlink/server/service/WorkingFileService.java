@@ -14,6 +14,10 @@ import com.devlink.server.repository.WorkingFileRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import java.util.UUID;
+import com.devlink.server.domain.gitrepo.WorkingFileId;
+import com.devlink.server.dto.gitcollection.WorkingFileRevisionResponse;
+import com.devlink.server.repository.WorkingFileRevisionRepository;
 
 @Service
 @RequiredArgsConstructor
@@ -25,6 +29,39 @@ public class WorkingFileService {
 	private final TeamGitRepositoryRepository repositories;
 	private final WorkingFileRepository workingFiles;
 	private final ObjectMapper objectMapper;
+	private final WorkingFileRevisionRepository revisions;
+	
+	@Transactional
+	public WorkingFileRevisionResponse getRevision(
+			Long teamId,
+			String repoKey,
+			AgentPrincipal principal) {
+		
+		validateAccess(teamId, principal);
+		validator.validateRepoKey(repoKey);
+		teams.requireTeamMember(principal.ownerUserId(), teamId);
+		
+		repositories.insertIfAbsent(teamId, repoKey);
+		
+		var repository = repositories
+				.findByTeamIdAndOriginUrlSha256(teamId, repoKey)
+				.orElseThrow(() ->
+					new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR));
+		
+		Long repoId = repository.getId();
+		Long userId = principal.ownerUserId();
+		
+		revisions.insertIfAbsent(repoId, userId, UUID.randomUUID());
+		
+		var current = revisions
+				.findById(new WorkingFileId(repoId, userId))
+				.orElseThrow(() ->
+				new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR));
+		
+		return new WorkingFileRevisionResponse(
+				2,
+				current.getRevision());
+	}
 	
 	@Transactional
 	public void replace(

@@ -186,11 +186,26 @@ class WorkingFileHttpIntegrationTest extends AbstractIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"GET", "POST", "DELETE", "PATCH"})
+    @ValueSource(strings = {"POST", "DELETE", "PATCH"})
     void authenticatedUnsupportedMethodReturns405(String method) throws Exception {
         error(send(method, endpoint(teamId, REPO_KEY), bearer(), HttpRequest.BodyPublishers.noBody(), null),
                 405, "METHOD_NOT_ALLOWED");
         assertNoWrites();
+    }
+
+    @Test
+    void getRevisionIsAvailableAtTheFormalPathOnly() throws Exception {
+        HttpResponse<String> response = send("GET", endpoint(teamId, REPO_KEY), bearer(),
+                HttpRequest.BodyPublishers.noBody(), null);
+        if (workingPath().equals("/git/working-files/")) {
+            JsonNode data = success(response);
+            assertThat(data.path("protocolVersion").asInt()).isEqualTo(2);
+            assertThat(UUID.fromString(data.path("revision").asText())).isNotNull();
+            assertThat(observationCount()).isZero();
+        } else {
+            error(response, 405, "METHOD_NOT_ALLOWED");
+            assertNoWrites();
+        }
     }
 
     @ParameterizedTest

@@ -22,10 +22,17 @@ public class WorkingFileValidator {
 		this.validator = validator;
 	}
 	
-	public void validate(String repoKey, WorkingFileRequest request) {
+	public void validateRepoKey(String repoKey) {
 		if(repoKey == null
-				|| !REPO_KEY_PATTERN.matcher(repoKey).matches()
-				|| request == null) {
+				|| !REPO_KEY_PATTERN.matcher(repoKey).matches()) {
+			throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+		}
+	}
+	
+	public void validate(String repoKey, WorkingFileRequest request) {
+		validateRepoKey(repoKey);
+		
+		if(request == null) {
 			throw new BusinessException(ErrorCode.VALIDATION_FAILED);
 		}
 		
