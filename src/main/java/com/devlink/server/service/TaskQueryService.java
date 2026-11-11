@@ -68,6 +68,15 @@ public class TaskQueryService {
 			Long taskId,
 			UserPrincipal user,
 			TaskEventListRequest request) {
+        return getWebTaskHistory(teamId, taskId, user, request, null);
+    }
+
+    @Transactional(readOnly = true)
+    public WebTaskHistoryResponse getWebTaskHistory(Long teamId, Long taskId, UserPrincipal user,
+            TaskEventListRequest request, String afterSequence) {
+        if (afterSequence != null && request.beforeSequence() != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+        }
 		if(user == null) {
 			throw new BusinessException(ErrorCode.AUTHENTICATION_REQUIRED);
 		}
@@ -91,7 +100,16 @@ public class TaskQueryService {
 		
 		List<TaskEvent> fetched;
 		
-		if(request.beforeSequence() == null) {
+		if (afterSequence != null) {
+            long after;
+            try {
+                after = Long.parseLong(afterSequence);
+                if (after < 0) throw new NumberFormatException();
+            } catch (NumberFormatException exception) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+            }
+            fetched = taskEventRepository.findEventsAfterByTypes(taskId, eventTypes, after, pageable);
+        } else if(request.beforeSequence() == null) {
 			fetched = taskEventRepository.findLatestEventsByTypes(taskId, eventTypes, pageable);
 		}else {
 			Long beforeSequence;
@@ -107,9 +125,10 @@ public class TaskQueryService {
 		List<TaskEvent> selected = new ArrayList<>(
 				fetched.subList(0, Math.min(limit, fetched.size())));
 		
-		Collections.reverse(selected);
+		if (afterSequence == null) Collections.reverse(selected);
 		
-		String nextBeforeSequence = hasNext ? selected.getFirst().getSequence().toString():null;
+		String nextBeforeSequence = afterSequence == null && hasNext ? selected.getFirst().getSequence().toString() : null;
+        String nextAfterSequence = afterSequence != null && hasNext ? selected.getLast().getSequence().toString() : null;
 		
 		TaskStatus status = task.getStatus();
 		
@@ -131,7 +150,8 @@ public class TaskQueryService {
 				findTaskFiles(taskId),
 				toEventResponses(selected),
 				nextBeforeSequence,
-				hasNext);
+				hasNext,
+                nextAfterSequence);
 	}
 	
 	@Transactional(readOnly = true)

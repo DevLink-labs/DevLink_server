@@ -10,6 +10,7 @@ import lombok.NoArgsConstructor;
 
 // Bounded context: task.
 @Entity
+@EntityListeners(com.devlink.server.realtime.WebEventEntityListener.class)
 @Table(name = "tasks", uniqueConstraints = @UniqueConstraint(name = "uk_tasks_request_key", columnNames = {"requester_agent_id", "request_key"}))
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)

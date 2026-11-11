@@ -11,6 +11,15 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface TaskEventRepository extends JpaRepository<TaskEvent, Long> {
+    @Query("""
+            select e from TaskEvent e
+            where e.taskId = :taskId and e.eventType in :eventTypes and e.sequence > :afterSequence
+            order by e.sequence asc
+            """)
+    List<TaskEvent> findEventsAfterByTypes(@Param("taskId") Long taskId,
+            @Param("eventTypes") List<TaskEventType> eventTypes,
+            @Param("afterSequence") Long afterSequence, Pageable pageable);
+
     Optional<TaskEvent> findFirstByTaskIdAndEventTypeInOrderByIdDesc(
             Long taskId, List<TaskEventType> eventTypes);
     boolean existsByTaskIdAndEventType(Long taskId, TaskEventType eventType);

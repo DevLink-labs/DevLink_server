@@ -12,6 +12,7 @@ import org.hibernate.type.SqlTypes;
 
 // Bounded context: identity.
 @Entity
+@EntityListeners(com.devlink.server.realtime.WebEventEntityListener.class)
 @Table(name = "agents", uniqueConstraints = {
         @UniqueConstraint(name = "uk_agents_connection_token_hash", columnNames = {"connection_token_hash"}),
         @UniqueConstraint(name = "uk_agents_team_name_tool_type", columnNames = {"team_id", "name", "tool_type"})

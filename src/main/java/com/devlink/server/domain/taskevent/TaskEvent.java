@@ -11,6 +11,7 @@ import org.hibernate.annotations.Generated;
 
 // Bounded context: task.
 @Entity
+@EntityListeners(com.devlink.server.realtime.WebEventEntityListener.class)
 @Table(name = "task_events")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
