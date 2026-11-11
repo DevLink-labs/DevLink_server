@@ -26,6 +26,7 @@ public class TaskStatusService {
     private final TaskEventRepository taskEventRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final ObjectMapper objectMapper;
+    private final TeamContextOutboxWriter teamContextOutbox;
 
     @Transactional
     public ChangeTaskStatusResponse changeStatus(Long taskId, Long agentId, ChangeTaskStatusRequest request) {
@@ -67,10 +68,12 @@ public class TaskStatusService {
             default -> throw new BusinessException(ErrorCode.VALIDATION_FAILED);
         }
 
-        taskEventRepository.save(TaskEvent.of(taskId, TaskEventType.STATUS_CHANGED,
+        TaskEvent history = taskEventRepository.save(TaskEvent.of(taskId, TaskEventType.STATUS_CHANGED,
                 previous + " → " + task.getStatus() + ": " + description));
         // 이력과 상태를 함께 flush한다. 동시 변경은 @Version으로 검출하고 전체 롤백한다.
         taskRepository.flush();
+        // 팀 Context 갱신 신호도 같은 트랜잭션에 남긴다.
+        teamContextOutbox.enqueue(task, history);
         UUID outboxId = UUID.randomUUID();
         var message = TaskStatusChangedMessage.from(outboxId, task, previous);
         // 별도 트랜잭션이나 커밋 후 콜백을 사용하지 않는다. 저장 실패 시 상태와 이력도 롤백된다.
