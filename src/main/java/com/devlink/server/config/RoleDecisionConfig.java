@@ -29,7 +29,10 @@ public class RoleDecisionConfig {
             return RoleDecisionClient.disabled();
         }
         Duration timeout = Duration.ofMillis(settings.timeoutMs());
-        HttpClient http = HttpClient.newBuilder().connectTimeout(timeout).build();
+        // HTTP/1.1로 고정한다. JDK 클라이언트의 기본값(HTTP/2)은 평문 http 주소에 h2c 업그레이드 헤더를 붙이는데,
+        // 팀·파트 Context 추론에서 vLLM 0.32.0(uvicorn) 서버가 그런 요청을 400으로 거절했다(DevLink_server#103).
+        // https 주소(OpenRouter)도 HTTP/1.1을 쓰게 된다. 요청이 드물고 추천 한 번에 하나라 HTTP/2 다중화의 이점이 작다.
+        HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(timeout).build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(timeout);
         RestClient client = builder.requestFactory(factory).build();

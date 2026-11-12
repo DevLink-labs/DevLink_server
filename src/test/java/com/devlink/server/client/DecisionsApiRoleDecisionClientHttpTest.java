@@ -72,10 +72,14 @@ class DecisionsApiRoleDecisionClientHttpTest {
     void keylessSelfHostedUrlIsCalledAsWrittenWithoutAnAuthorizationHeader() {
         AtomicReference<String> receivedTarget = new AtomicReference<>();
         AtomicReference<Boolean> hadAuthorization = new AtomicReference<>();
+        AtomicReference<String> upgrade = new AtomicReference<>();
+        AtomicReference<String> http2Settings = new AtomicReference<>();
         server.createContext("/v1/decisions", exchange -> {
             try (exchange) {
                 receivedTarget.set(exchange.getRequestURI().toString());
                 hadAuthorization.set(exchange.getRequestHeaders().containsKey("Authorization"));
+                upgrade.set(exchange.getRequestHeaders().getFirst("Upgrade"));
+                http2Settings.set(exchange.getRequestHeaders().getFirst("HTTP2-Settings"));
                 exchange.getRequestBody().readAllBytes();
                 respond(exchange, "{\"answers\":{\"t0\":{\"type\":\"noul\",\"noul\":0.91}}}");
             }
@@ -90,6 +94,9 @@ class DecisionsApiRoleDecisionClientHttpTest {
         // 경로와 쿼리는 설정에 적은 그대로 간다.
         assertThat(receivedTarget.get()).isEqualTo("/v1/decisions?tenant=a%20b");
         assertThat(hadAuthorization.get()).isFalse();
+        // 평문 주소에 h2c 업그레이드 헤더를 붙이지 않는다. vLLM 0.32.0(uvicorn) 서버가 그런 요청을 400으로 거절했다(DevLink_server#103).
+        assertThat(upgrade.get()).as("h2c upgrade header").isNull();
+        assertThat(http2Settings.get()).isNull();
     }
 
     @Test

@@ -83,10 +83,11 @@ OFFLINE 후보를 선택한 후의 작업 요청은 생성과 전달 결과를 �
 - 그 서버가 이 요청(`{model, state, questions}`, 질문마다 `type: noul`과 `instructions`)을 받고 `answers.<키>.noul`로 답한다는 것은 가정이다. [OpenRouter 문서](https://openrouter.ai/docs/guides/community/multimodal-decisions)는 TypeSafe 자체 API(api.typesafe.ai)용으로 쓴 요청이 OpenRouter에서 그대로 동작한다고만 적고 있고, 반대 방향의 호환은 확인하지 않았다. 실제 자체 호스팅 결정 모델 서버로 실행해 보지 않았다. 형식이 다르면 모든 요청이 토큰 일치로 계산되고 경고 로그만 남는다.
 - `DECISION_MODEL_API_KEY`는 OpenRouter 전용이 아니다. 값이 있으면 `DECISION_MODEL_URL`이 어디든 그 주소로 Bearer 헤더에 실려 간다. 주소를 바꿀 때는 키도 비우거나 그 서버의 키로 바꾼다.
 - http 주소에서는 질문과 태그가 암호화되지 않은 채 전송되고 응답의 출처도 확인되지 않는다. 경로상의 누군가가 질문을 읽거나 응답을 바꿔 Agent당 한 태그(20점)의 일치를 더할 수 있다. http는 신뢰하는 사설망에서만 쓰고 그 밖에는 https를 쓴다.
+- 요청은 HTTP/1.1로 보낸다. JDK 클라이언트의 기본값(HTTP/2)은 평문 http 주소에 h2c 업그레이드 헤더를 붙이는데, 팀·파트 Context 추론에서 vLLM 0.32.0(uvicorn) 서버가 그런 요청을 400으로 거절했고([DevLink_server#103](https://github.com/SSAFY-URAYAHA/DevLink_server/issues/103)), 이 클라이언트도 같은 헤더를 붙이고 있어 함께 고쳤다. 결정 모델 서버로 재현한 것은 아니다.
 - 켜 두었는데 설정이 갖춰지지 않으면(주소·모델 없음, 필요한 키 없음) 호출하지 않으며 시작할 때 경고 로그를 한 줄 남긴다.
 - Google의 Decisions API를 직접 부르는 형식(`x-goog-api-key`, 본문 `input`)은 지원하지 않는다.
 
-검증은 DecisionsApiRoleDecisionClientTest의 요청 형식(주소, Bearer 인증, `state`)·임계값·실패 유형별 빈 결과·키 없는 자체 호스팅 호출, DecisionsApiRoleDecisionClientHttpTest의 실제 HTTP 요청과 응답 헤더·본문 지연 시 시간 제한, AgentRecommendationRoleDecisionTest의 점수 보강·Agent당 한 태그 제한·실패 시 동일 응답·비멤버 차단·트랜잭션 밖 호출, RoleDecisionWiringTest의 환경 변수 연결·자체 호스팅 구성·켰지만 설정이 모자랄 때의 경고 로그로 수행한다. 평가 세트는 `src/test/resources/recommendation/role-decision-eval.txt`에 있고, 실제 모델의 정확도와 지연은 `DECISION_MODEL_EVAL=true`와 키(키 없는 자체 호스팅 서버는 `DECISION_MODEL_REQUIRE_API_KEY=false`)를 환경 변수로 두고 `./gradlew test --tests '*RoleDecisionEvaluationTest' -i`로 잰다. 모델의 지연, 한국어 정확도, 가격, 호출 한도, 데이터 보관 조건은 이 측정 전까지 확인되지 않은 상태다.
+검증은 DecisionsApiRoleDecisionClientTest의 요청 형식(주소, Bearer 인증, `state`)·임계값·실패 유형별 빈 결과·키 없는 자체 호스팅 호출, DecisionsApiRoleDecisionClientHttpTest의 실제 HTTP 요청(평문 주소에 업그레이드 헤더 없음 포함)과 응답 헤더·본문 지연 시 시간 제한, AgentRecommendationRoleDecisionTest의 점수 보강·Agent당 한 태그 제한·실패 시 동일 응답·비멤버 차단·트랜잭션 밖 호출, RoleDecisionWiringTest의 환경 변수 연결·자체 호스팅 구성·켰지만 설정이 모자랄 때의 경고 로그로 수행한다. 평가 세트는 `src/test/resources/recommendation/role-decision-eval.txt`에 있고, 실제 모델의 정확도와 지연은 `DECISION_MODEL_EVAL=true`와 키(키 없는 자체 호스팅 서버는 `DECISION_MODEL_REQUIRE_API_KEY=false`)를 환경 변수로 두고 `./gradlew test --tests '*RoleDecisionEvaluationTest' -i`로 잰다. 모델의 지연, 한국어 정확도, 가격, 호출 한도, 데이터 보관 조건은 이 측정 전까지 확인되지 않은 상태다.
 
 ## 한계
 
