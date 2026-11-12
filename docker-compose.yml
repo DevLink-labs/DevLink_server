@@ -24,12 +24,16 @@ services:
             CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://devlinkfrontend.vercel.app,https://devlink.ai.kr}
             WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:-http://localhost:3000}
             TASK_MESSAGE_CURSOR_SECRET: ${TASK_MESSAGE_CURSOR_SECRET:-}
-            # 팀·파트 Context 추론용. 비어 있으면 구조 신호 전용으로 동작한다.
-            UPSTAGE_API_KEY: ${UPSTAGE_API_KEY:-}
-            # OpenRouter·vLLM 등 다른 OpenAI 호환 엔드포인트로 바꿀 때만 지정한다.
-            TEAM_CONTEXT_INFERENCE_BASE_URL: ${TEAM_CONTEXT_INFERENCE_BASE_URL:-https://api.upstage.ai/v1}
-            TEAM_CONTEXT_INFERENCE_MODEL: ${TEAM_CONTEXT_INFERENCE_MODEL:-solar-pro4}
-            TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD: ${TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD:-false}
+            # 팀·파트 Context 추론용 OpenRouter 키. 비어 있으면 구조 신호 전용으로 동작한다.
+            OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+            # 기본은 OpenRouter다. 자체 호스팅 서버(vLLM 등 OpenAI 호환)로 바꿀 때만 지정한다.
+            # vLLM을 함께 띄우려면 docker-compose.vllm.yml을 겹쳐 쓴다.
+            TEAM_CONTEXT_INFERENCE_BASE_URL: ${TEAM_CONTEXT_INFERENCE_BASE_URL:-https://openrouter.ai/api/v1}
+            TEAM_CONTEXT_INFERENCE_MODEL: ${TEAM_CONTEXT_INFERENCE_MODEL:-openai/gpt-6-luna}
+            TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD: ${TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD:-auto}
+            TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY: "${TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY:-true}"
+            TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS: "${TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS:-6000}"
+            TEAM_CONTEXT_INFERENCE_TIMEOUT_MS: "${TEAM_CONTEXT_INFERENCE_TIMEOUT_MS:-60000}"
         ports:
             - "8080:8080"
         depends_on:

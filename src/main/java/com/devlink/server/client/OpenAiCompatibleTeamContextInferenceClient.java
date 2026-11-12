@@ -44,7 +44,9 @@ public class OpenAiCompatibleTeamContextInferenceClient implements TeamContextIn
         messages.addObject().put("role", "system").put("content", TeamContextPrompt.SYSTEM);
         messages.addObject().put("role", "user").put("content", TeamContextPrompt.user(mapper, request));
         body.set("response_format", TeamContextPrompt.responseFormat(mapper));
-        // Upstage Solar는 reasoning_effort를 보내지 않으면 추론 없이 답하므로 max_tokens가 본문에 그대로 쓰인다.
+        // reasoning 설정은 보내지 않는다. 기본 모델(openai/gpt-6-luna)은 기본으로 추론 토큰을 조금 쓰고 그만큼 max_tokens에서
+        // 빠진다(15개 항목 요약에서 약 170토큰). 추론하지 않는 모델에는 영향이 없다.
+        // 요약은 배열당 max-items개까지 커질 수 있으므로 max_tokens는 가득 찬 요약과 추론 토큰을 함께 담을 만큼 둔다.
         body.put("max_tokens", settings.maxOutputTokens());
         if (settings.openRouterProviderGuard()) {
             // OpenRouter 전용: 스키마를 못 받는 제공자와 입력을 학습에 쓰는 제공자로 라우팅하지 않는다.
@@ -72,17 +74,26 @@ public class OpenAiCompatibleTeamContextInferenceClient implements TeamContextIn
         } catch (RestClientException exception) {
             throw new TeamContextInferenceException("Inference request failed: " + exception.getMessage(), exception);
         }
+        // 한도에서 잘린 출력은 같은 입력으로 다시 보내도 같은 지점에서 잘린다. 온전한 JSON이 왔으면 그대로 쓰고,
+        // 내용이 없거나 끊겼을 때만 원인을 로그에서 바로 알 수 있게 구분한다.
+        boolean cutOff = response != null
+                && "length".equals(response.path("choices").path(0).path("finish_reason").asText(null));
         String content = response == null ? null
                 : response.path("choices").path(0).path("message").path("content").asText(null);
         if (content == null || content.isBlank()) {
-            throw new TeamContextInferenceException("Inference returned no content");
+            throw cutOff ? cutOff(null) : new TeamContextInferenceException("Inference returned no content");
         }
         try {
             return mapper.readValue(stripFence(content), TeamContextSummary.class)
                     .normalized(settings.maxItems(), settings.maxInputChars());
         } catch (JsonProcessingException exception) {
-            throw new TeamContextInferenceException("Inference returned invalid JSON", exception);
+            throw cutOff ? cutOff(exception) : new TeamContextInferenceException("Inference returned invalid JSON", exception);
         }
+    }
+
+    private TeamContextInferenceException cutOff(Exception cause) {
+        return new TeamContextInferenceException("Inference output was cut off at max_tokens (" + settings.maxOutputTokens()
+                + "); raise TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS (devlink.team-context.inference.max-output-tokens)", cause);
     }
 
     /** 스키마 강제가 없는 제공자가 ```json 울타리를 붙여도 본문만 읽는다. */
