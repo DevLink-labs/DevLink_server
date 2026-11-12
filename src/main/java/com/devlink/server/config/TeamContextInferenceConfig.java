@@ -50,7 +50,14 @@ public class TeamContextInferenceConfig {
             log.warn("Team context inference calls OpenRouter without the provider guard; requests may be routed to "
                     + "providers that ignore the JSON schema or collect inputs");
         }
-        HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+        // 구조 신호 전용과 LLM 요약, OpenRouter와 자체 호스팅을 시작 로그에서 구분할 수 있게 한다. 키는 남기지 않는다.
+        log.info("Team context inference uses {} with model {} (timeout {} ms)", settings.endpointHost(),
+                settings.model(), settings.timeoutMs());
+        // HTTP/1.1로 고정한다. JDK 클라이언트의 기본값(HTTP/2)은 평문 http 주소에 h2c 업그레이드 헤더를 붙이는데,
+        // vLLM의 서버(uvicorn)는 그런 요청의 본문을 앱에 넘기지 않아 vLLM이 400("Field required")으로 거절한다.
+        // https 주소(OpenRouter)도 HTTP/1.1을 쓰게 된다. 요약은 요청을 하나씩 보내므로 HTTP/2의 이점이 없다.
+        HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(10)).build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(Duration.ofMillis(settings.timeoutMs()));
         RestClient client = builder.baseUrl(settings.baseUrl()).requestFactory(factory).build();

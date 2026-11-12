@@ -28,6 +28,7 @@ class TeamContextInferenceWiringTest {
     private static final String MODEL_MISMATCH = "non-OpenRouter endpoint with the OpenRouter default model";
     private static final String NO_GUARD = "without the provider guard";
     private static final String NO_KEY = "OPENROUTER_API_KEY is empty";
+    private static final String IN_USE = "Team context inference uses ";
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             // 개발자 셸의 OPENROUTER_API_KEY 등이 결과를 바꾸지 않게 OS 환경 변수를 뺀다.
@@ -46,9 +47,10 @@ class TeamContextInferenceWiringTest {
             assertThat(settings.baseUrl()).isEqualTo("https://openrouter.ai/api/v1");
             assertThat(settings.model()).isEqualTo(TeamContextSettings.DEFAULT_OPENROUTER_MODEL).isEqualTo("openai/gpt-6-luna");
             assertThat(settings.maxOutputTokens()).isEqualTo(6000);
+            assertThat(settings.timeoutMs()).isEqualTo(60_000);
             assertThat(settings.llmConfigured()).isFalse();
         });
-        assertThat(output.getAll()).contains(NO_KEY).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+        assertThat(output.getAll()).contains(NO_KEY).doesNotContain(IN_USE, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
     }
 
     @Test
@@ -62,7 +64,8 @@ class TeamContextInferenceWiringTest {
             assertThat(settings.openRouterProviderGuard()).isTrue();
             assertThat(settings.toString()).contains("apiKey=<set>").doesNotContain(OPENROUTER_KEY);
         });
-        assertThat(output.getAll()).doesNotContain(NO_KEY, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD, OPENROUTER_KEY);
+        assertThat(output.getAll()).contains(IN_USE + "openrouter.ai with model openai/gpt-6-luna (timeout 60000 ms)")
+                .doesNotContain(NO_KEY, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD, OPENROUTER_KEY);
     }
 
     @Test
@@ -140,14 +143,22 @@ class TeamContextInferenceWiringTest {
 
     @Test
     void selfHostedEndpointWorksWithoutAKeyAndWithoutTheOpenRouterField(CapturedOutput output) {
-        runner.withPropertyValues("TEAM_CONTEXT_INFERENCE_BASE_URL=http://127.0.0.1:8000/v1",
-                        "TEAM_CONTEXT_INFERENCE_MODEL=local-model", "TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false")
+        // docker-compose.vllm.yml이 app에 넘기는 값과 같은 구성이다.
+        runner.withPropertyValues("TEAM_CONTEXT_INFERENCE_BASE_URL=http://vllm:8000/v1",
+                        "TEAM_CONTEXT_INFERENCE_MODEL=local-model", "TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false",
+                        "OPENROUTER_API_KEY=", "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=false",
+                        "TEAM_CONTEXT_INFERENCE_TIMEOUT_MS=120000")
                 .run(context -> {
                     assertThat(context.getBean(TeamContextInferenceClient.class))
                             .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class);
-                    assertThat(context.getBean(TeamContextSettings.class).openRouterProviderGuard()).isFalse();
+                    TeamContextSettings settings = context.getBean(TeamContextSettings.class);
+                    assertThat(settings.openRouterProviderGuard()).isFalse();
+                    assertThat(settings.apiKey()).isEmpty();
+                    assertThat(settings.timeoutMs()).isEqualTo(120_000);
+                    assertThat(settings.leaseMillis()).isEqualTo(150_000);
                 });
-        assertThat(output.getAll()).doesNotContain(NO_KEY, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+        assertThat(output.getAll()).contains(IN_USE + "vllm with model local-model (timeout 120000 ms)")
+                .doesNotContain(NO_KEY, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
     }
 
     @ParameterizedTest
