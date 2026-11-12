@@ -5,9 +5,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import com.devlink.server.common.BusinessException;
 import com.devlink.server.common.ErrorCode;
 import com.devlink.server.domain.AgentPrincipal;
@@ -158,14 +160,14 @@ class AgentRecommendationServiceTest {
         Instant observed = NOW.minusSeconds(20);
         stubEvidence(new RecommendationGitEvidence(GitCoverageState.AVAILABLE, null, WorkingObservationState.FRESH,
                 Set.of(PATH), Map.of(
-                        200L, new UserEvidence(observed, 1, twoDaysAgo, List.of(
-                                new RelatedFile(PATH, true, true, observed),
+                        200L, directEvidence(observed, 1, twoDaysAgo, List.of(
+                                new RelatedFile(PATH, true, true, observed, false),
                                 new RelatedFile(new RepoPath(12L, "src/auth/TokenIssuer.java"), false, true,
-                                        twoDaysAgo))),
-                        300L, new UserEvidence(observed, 2, NOW.minus(Duration.ofDays(28)), List.of(
-                                new RelatedFile(PATH, true, true, observed))),
-                        400L, new UserEvidence(null, 2, NOW.minus(Duration.ofDays(14)), List.of(
-                                new RelatedFile(PATH, false, true, NOW.minus(Duration.ofDays(14))))))));
+                                        twoDaysAgo, false))),
+                        300L, directEvidence(observed, 2, NOW.minus(Duration.ofDays(28)), List.of(
+                                new RelatedFile(PATH, true, true, observed, false))),
+                        400L, directEvidence(null, 2, NOW.minus(Duration.ofDays(14)), List.of(
+                                new RelatedFile(PATH, false, true, NOW.minus(Duration.ofDays(14)), false))))));
 
         AgentRecommendationResponse response = service.recommend(TEAM, REQUESTER,
                 new AgentRecommendationRequest(QUESTION, null));
@@ -201,7 +203,7 @@ class AgentRecommendationServiceTest {
         Agent untagged = agent(32L, 200L, "무태그 Agent", List.of());
         stubTeam(List.of(tagged, untagged));
         stubEvidence(new RecommendationGitEvidence(GitCoverageState.AVAILABLE, null, WorkingObservationState.FRESH,
-                Set.of(PATH), Map.of(200L, new UserEvidence(NOW, 5, NOW, List.of(new RelatedFile(PATH, true, true, NOW))))));
+                Set.of(PATH), Map.of(200L, directEvidence(NOW, 5, NOW, List.of(new RelatedFile(PATH, true, true, NOW, false))))));
 
         AgentRecommendationResponse response = service.recommend(TEAM, REQUESTER,
                 new AgentRecommendationRequest(QUESTION, null));
@@ -215,7 +217,7 @@ class AgentRecommendationServiceTest {
 
     @Test
     void tiesAreOrderedByAgentIdAndLimitedToFive() {
-        List<Agent> team = new java.util.ArrayList<>();
+        List<Agent> team = new ArrayList<>();
         for (long id = 9; id >= 3; id--) {
             Agent candidate = agent(id, id * 10, "Agent " + id, List.of("인증"));
             candidate.markOnline(LocalDateTime.now());
@@ -303,6 +305,86 @@ class AgentRecommendationServiceTest {
         assertError(() -> service.recommend(TEAM, REQUESTER, new AgentRecommendationRequest(QUESTION, null)),
                 ErrorCode.ACCESS_DENIED);
         verifyNoInteractions(agents, evidence);
+    }
+
+    @Test
+    void workingIndirectFileIsFirstEvenWhenDirectCommitsFillTheDisplayLimit() {
+        Instant oldCommit = NOW.minus(Duration.ofDays(80));
+        List<RelatedFile> files = new ArrayList<>();
+        for (int index = 0; index < RecommendationScorePolicy.MAX_RELATED_FILES; index++) {
+            files.add(new RelatedFile(new RepoPath(12L, "src/auth/Direct" + index + ".java"),
+                    false, true, oldCommit, false));
+        }
+        RepoPath indirectPath = new RepoPath(12L, "src/web/CheckoutController.java");
+        files.add(new RelatedFile(indirectPath, true, false, NOW, true));
+        UserEvidence git = new UserEvidence(NOW, RecommendationScorePolicy.MAX_RELATED_FILES, oldCommit, files,
+                RecommendationScorePolicy.INDIRECT_WEIGHT, RecommendationScorePolicy.MAX_RELATED_FILES,
+                oldCommit, 1.0);
+
+        var candidate = recommendWithEvidence(git);
+
+        assertThat(candidate.relatedFiles()).hasSize(RecommendationScorePolicy.MAX_RELATED_FILES);
+        assertThat(candidate.relatedFiles().getFirst().relativePath()).isEqualTo(indirectPath.relativePath());
+        assertThat(candidate.relatedFiles().getFirst().sources()).contains(RelatedFileSource.WORKING);
+        assertThat(candidate.workingObservedAt()).isEqualTo(NOW);
+        assertThat(candidate.scores().working())
+                .isEqualTo(RecommendationScorePolicy.working(RecommendationScorePolicy.INDIRECT_WEIGHT));
+        assertThat(candidate.scores().frequency())
+                .isEqualTo(RecommendationScorePolicy.frequency(RecommendationScorePolicy.MAX_RELATED_FILES));
+    }
+
+    @Test
+    void workingDirectFilePrecedesMoreRecentWorkingIndirectFile() {
+        RepoPath indirectPath = new RepoPath(12L, "src/web/CheckoutController.java");
+        List<RelatedFile> files = List.of(
+                new RelatedFile(indirectPath, true, false, NOW, true),
+                new RelatedFile(PATH, true, false, NOW.minusSeconds(30), false));
+        UserEvidence git = new UserEvidence(NOW, 0, null, files, 1.0, 0.0, null, 0.0);
+
+        var candidate = recommendWithEvidence(git);
+
+        assertThat(candidate.relatedFiles()).extracting(file -> file.relativePath())
+                .containsExactly(PATH.relativePath(), indirectPath.relativePath());
+        assertThat(candidate.relatedFiles()).allSatisfy(file ->
+                assertThat(file.sources()).contains(RelatedFileSource.WORKING));
+    }
+
+    @Test
+    void committedFilesUseDirectWeightBeforeRecencyAndRecencyWithinEachWeight() {
+        RepoPath oldDirect = new RepoPath(12L, "src/auth/OldDirect.java");
+        RepoPath recentDirect = new RepoPath(12L, "src/auth/RecentDirect.java");
+        RepoPath oldIndirect = new RepoPath(12L, "src/web/OldIndirect.java");
+        RepoPath recentIndirect = new RepoPath(12L, "src/web/RecentIndirect.java");
+        Instant oldCommit = NOW.minus(Duration.ofDays(80));
+        List<RelatedFile> files = List.of(
+                new RelatedFile(recentIndirect, false, true, NOW, true),
+                new RelatedFile(oldDirect, false, true, oldCommit, false),
+                new RelatedFile(oldIndirect, false, true, oldCommit, true),
+                new RelatedFile(recentDirect, false, true, NOW.minusSeconds(30), false));
+
+        var candidate = recommendWithEvidence(directEvidence(null, files.size(), NOW, files));
+
+        assertThat(candidate.relatedFiles()).extracting(file -> file.relativePath())
+                .containsExactly(recentDirect.relativePath(), oldDirect.relativePath(),
+                        recentIndirect.relativePath(), oldIndirect.relativePath());
+    }
+
+    private RecommendationCandidateResponse recommendWithEvidence(UserEvidence git) {
+        stubTeam(List.of(agent(21L, 200L, "Candidate", List.of())));
+        Set<RepoPath> paths = git.relatedFiles().stream().map(RelatedFile::path)
+                .collect(Collectors.toSet());
+        stubEvidence(new RecommendationGitEvidence(GitCoverageState.AVAILABLE, null,
+                git.workingObservedAt() != null ? WorkingObservationState.FRESH : WorkingObservationState.NOT_COLLECTED,
+                paths, Map.of(200L, git)));
+        return service.recommend(TEAM, REQUESTER, new AgentRecommendationRequest(QUESTION, null))
+                .candidates().getFirst();
+    }
+
+    private static UserEvidence directEvidence(Instant workingObservedAt, int distinctCommitCount,
+            Instant latestCommitAt, List<RelatedFile> relatedFiles) {
+        return new UserEvidence(workingObservedAt, distinctCommitCount, latestCommitAt, relatedFiles,
+                workingObservedAt == null ? 0.0 : 1.0, distinctCommitCount, latestCommitAt,
+                latestCommitAt == null ? 0.0 : 1.0);
     }
 
     private void stubTeam(List<Agent> teamAgents) {

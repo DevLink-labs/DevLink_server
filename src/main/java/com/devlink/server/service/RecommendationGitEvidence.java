@@ -40,15 +40,23 @@ public record RecommendationGitEvidence(
             Instant workingObservedAt,
             int distinctCommitCount,
             Instant latestCommitAt,
-            List<RelatedFile> relatedFiles) {
-        public static final UserEvidence NONE = new UserEvidence(null, 0, null, List.of());
-
-        public boolean isWorkingOnRelatedFile() {
-            return workingObservedAt != null;
-        }
+            List<RelatedFile> relatedFiles,
+            double workingWeight,
+            double weightedCommitCount,
+            Instant strongestCommitAt,
+            double strongestCommitWeight) {
+        public static final UserEvidence NONE = new UserEvidence(
+                null, 0, null, List.of(), 0.0, 0.0, null, 0.0);
     }
 
-    /** 근거 파일 하나. 현재 작업 중 여부와 해당 경로에 반영된 가장 최근 근거 시각을 가진다. */
-    public record RelatedFile(RepoPath path, boolean working, boolean committed, Instant observedAt) {
+    /**
+     * 근거 파일 하나. 현재 작업 중 여부와 해당 경로에 반영된 가장 최근 근거 시각을 가진다.
+     * indirect는 직접 관련 파일을 import하여 한 단계 확장된 간접 관련 파일인지 나타낸다.
+     */
+    public record RelatedFile(RepoPath path, boolean working, boolean committed, Instant observedAt,
+            boolean indirect) {
+        public double weight() {
+            return indirect ? RecommendationScorePolicy.INDIRECT_WEIGHT : 1.0;
+        }
     }
 }
