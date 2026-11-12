@@ -1,0 +1,55 @@
+# 팀·파트 Context 요약을 외부 API 대신 자체 vLLM 서버로 돌리는 선택 구성이다. 기본 구성 위에 겹쳐 쓴다.
+#   VLLM_MODEL=<Hugging Face 모델 ID> docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d --build
+# Linux, NVIDIA GPU, NVIDIA Container Toolkit이 필요하다. 조건과 확인 방법은 docs/team-context.md의 "자체 호스팅 (vLLM)"에 있다.
+# 이 파일 없이 실행하는 기본 구성(OpenRouter 또는 구조 신호 전용)은 바뀌지 않는다.
+services:
+    vllm:
+        # 운영에서는 확인한 버전으로 고정한다(예: VLLM_IMAGE_TAG=v<버전>).
+        image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-latest}
+        command:
+            - --model
+            - ${VLLM_MODEL:?VLLM_MODEL에 Hugging Face 모델 ID를 지정한다}
+            # 요청의 입력 토큰과 max_tokens(기본 6000)의 합이 이 길이를 넘으면 vLLM이 요청을 거절한다.
+            - --max-model-len
+            - "${VLLM_MAX_MODEL_LEN:-32768}"
+        environment:
+            # 접근 승인이 필요한 모델을 받을 때만 지정한다.
+            HF_TOKEN: ${HF_TOKEN:-}
+        volumes:
+            - vllm_hf_cache:/root/.cache/huggingface
+        # vLLM은 공유 메모리를 쓴다. 공식 실행 예시와 같이 호스트 IPC를 쓴다.
+        ipc: host
+        # 재시작 정책은 두지 않는다. 시작 중에 죽은 vLLM을 계속 다시 띄우면 app이 원인 표시 없이 끝없이 기다리게 된다.
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          count: all
+                          capabilities: [gpu]
+        # 포트를 호스트에 열지 않는다. 키 없이 받으므로 compose 네트워크 안의 app만 접근한다.
+        healthcheck:
+            test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+            interval: 15s
+            timeout: 10s
+            # 첫 실행은 모델을 내려받고 올리는 데 오래 걸린다. VLLM_START_PERIOD에 약 5분을 더한 시간 안에 준비되지 않으면
+            # app이 시작되지 않는다.
+            start_period: ${VLLM_START_PERIOD:-10m}
+            retries: 20
+    app:
+        environment:
+            TEAM_CONTEXT_INFERENCE_BASE_URL: http://vllm:8000/v1
+            TEAM_CONTEXT_INFERENCE_MODEL: ${VLLM_MODEL}
+            TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY: "false"
+            # OpenRouter 키가 남아 있으면 서버가 그 키를 다른 주소로 보내지 않으려고 LLM 요약을 끈다. 이 구성에서는 비운다.
+            OPENROUTER_API_KEY: ""
+            # 호스트 환경에 true가 남아 있어도 OpenRouter 전용 필드를 vLLM에 보내지 않는다.
+            TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD: "false"
+            TEAM_CONTEXT_INFERENCE_TIMEOUT_MS: "${TEAM_CONTEXT_INFERENCE_TIMEOUT_MS:-120000}"
+        depends_on:
+            # vLLM이 준비되기 전에 들어온 이벤트는 재시도 한도(기본 5회, 약 15초) 뒤 요약에서 빠진다. 그래서 준비를 기다린다.
+            # 대신 vLLM이 준비되지 못하면 app도 시작되지 않는다. docs/team-context.md의 "시작 순서와 장애" 참조.
+            vllm:
+                condition: service_healthy
+volumes:
+    vllm_hf_cache:

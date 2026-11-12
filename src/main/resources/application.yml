@@ -33,7 +33,8 @@ devlink:
             api-key: ${OPENROUTER_API_KEY:}
             require-api-key: ${TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY:true}
             model: ${TEAM_CONTEXT_INFERENCE_MODEL:openai/gpt-6-luna}
-            timeout-ms: 60000
+            # 응답이 느린 자체 호스팅 모델은 늘린다. 이 시간에 30초를 더한 만큼 이벤트를 점유한다.
+            timeout-ms: ${TEAM_CONTEXT_INFERENCE_TIMEOUT_MS:60000}
             # 요약은 배열당 max-items개(세 배열 합 60개)까지 커진다. 가득 찬 요약과 추론 토큰을 담을 만큼 둔다. 과금은 실제 생성 토큰 기준이다.
             max-output-tokens: ${TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS:6000}
             # 스키마 미지원·학습 수집 제공자로의 라우팅을 막는 OpenRouter 전용 요청 필드. auto는 base-url이 OpenRouter일 때만 넣는다.

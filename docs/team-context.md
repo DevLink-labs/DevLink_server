@@ -76,7 +76,7 @@ devlink:
       api-key: ${OPENROUTER_API_KEY:}
       require-api-key: true  # vLLM은 false
       model: ${TEAM_CONTEXT_INFERENCE_MODEL:openai/gpt-6-luna}
-      timeout-ms: 60000
+      timeout-ms: ${TEAM_CONTEXT_INFERENCE_TIMEOUT_MS:60000}
       max-output-tokens: 6000
       openrouter-provider-guard: auto  # auto(주소가 OpenRouter일 때만) / true / false
 ```
@@ -84,7 +84,7 @@ devlink:
 운영 Compose는 GitHub Actions Secret `PROD_ENV`에 등록한 추론 설정을 서버 컨테이너에 전달한다.
 `OPENROUTER_API_KEY`만 추가하면 기본 대상(OpenRouter의 `openai/gpt-6-luna`)으로 요약한다. 모델만 바꾸려면 `TEAM_CONTEXT_INFERENCE_MODEL`을,
 자체 호스팅 서버를 쓰려면 `TEAM_CONTEXT_INFERENCE_BASE_URL`과 모델을 함께 지정한다([`deploy/.prod.env.example`](../deploy/.prod.env.example)).
-호출 대상은 OpenRouter와 자체 호스팅 서버 두 가지다. Upstage 직접 호출용 설정은 없앴다.
+호출 대상은 OpenRouter와 자체 호스팅 서버 두 가지다. Upstage 직접 호출용 설정은 없앴다. 자체 호스팅은 아래 "자체 호스팅 (vLLM)"을 따른다.
 키가 없으면 구조 신호 전용으로 동작하고 요약 행의 `model`이 `structural`로 남는다.
 
 기본 주소는 2026-11-12에 Upstage에서 OpenRouter로 바뀌었고, 같은 변경에서 이전 키 이름(`UPSTAGE_API_KEY`)을 없앴다(S15P31D108-245). 그 전부터 운영하던 배포는 다음을 확인한다.
@@ -99,6 +99,65 @@ devlink:
 
 실제 엔드포인트 확인은 `TEAM_CONTEXT_LIVE=true`와 키를 환경 변수로 두고 `./gradlew test --tests '*TeamContextInferenceLiveTest' -i`로 한다. 여섯 이벤트를 차례로 넣어 스키마와 근거 좌표를 검사하고 요약을 출력한다. 주소·모델·제공자 필터 변수는 서버와 같은 규칙으로 읽는다.
 
+## 자체 호스팅 (vLLM)
+
+외부 API 없이 팀·파트 Context 요약을 돌리는 구성이다(S15P31D108-246). 요약 요청은 [vLLM](https://docs.vllm.ai)의 OpenAI 호환 서버가 받는다.
+담당 Agent 추천의 결정 모델(별도 PR DevLink_server#98, 이 브랜치에는 없다)은 이 구성과 무관하다. 로컬 결정 모델은 붙이지 않기로 했고(담당자 결정, 2026-11-12), 그 기능은 꺼 두거나 OpenRouter API로 켠다. 결정 모델은 자체 변수(`DECISION_MODEL_API_KEY`)에서 키를 읽으므로, 이 구성이 `OPENROUTER_API_KEY`를 비워도 영향받지 않는다.
+
+실행:
+
+```bash
+VLLM_MODEL=<Hugging Face 모델 ID> docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d --build
+```
+
+[`docker-compose.vllm.yml`](../docker-compose.vllm.yml)은 기본 구성 위에 겹쳐 쓰는 파일이다. `vllm` 서비스를 추가하고 `app`의 추론 설정을 그 서비스로 돌린다. 이 파일 없이 실행하는 기본 구성은 바뀌지 않는다.
+
+| 변수 | 기본값 | 뜻 |
+| --- | --- | --- |
+| `VLLM_MODEL` | 없음(필수) | vLLM이 올릴 Hugging Face 모델 ID. 서버가 요청에 넣는 모델 이름도 이 값이다 |
+| `VLLM_MAX_MODEL_LEN` | 32768 | vLLM의 `--max-model-len`. 모델이 지원하는 길이를 넘길 수 없다 |
+| `VLLM_IMAGE_TAG` | latest | `vllm/vllm-openai` 이미지 태그. 운영에서는 확인한 버전으로 고정한다 |
+| `HF_TOKEN` | 없음 | 접근 승인이 필요한 모델을 받을 때만 |
+| `VLLM_START_PERIOD` | 10m | 헬스체크 시작 유예. 모델 내려받기가 오래 걸리면 늘린다 |
+| `TEAM_CONTEXT_INFERENCE_TIMEOUT_MS` | 120000(이 구성), 60000(기본 구성) | 요약 한 번의 제한 시간 |
+
+조건:
+
+- Linux, NVIDIA GPU, NVIDIA Container Toolkit. GPU 메모리는 고른 모델과 `VLLM_MAX_MODEL_LEN`에 따라 달라진다.
+- 모델은 채팅 템플릿이 있는 텍스트 생성 모델이어야 하고, 한국어 요약과 JSON 스키마에 맞춘 출력을 할 수 있어야 한다. 기본 모델은 정하지 않았다. 고른 모델은 아래 확인 방법으로 여러 번 돌려 본다.
+- 서버가 보내는 요청은 `POST /v1/chat/completions`이고 `response_format: json_schema`(strict)와 `max_tokens`를 담는다. `Authorization` 헤더와 OpenRouter 전용 `provider` 필드는 보내지 않는다.
+- vLLM 포트는 호스트에 열지 않는다. 키 없이 받으므로 compose 네트워크 안의 `app`만 접근한다. 다른 장비의 vLLM을 쓰려면 이 파일 대신 `TEAM_CONTEXT_INFERENCE_BASE_URL`·`TEAM_CONTEXT_INFERENCE_MODEL`·`TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false`를 직접 지정하고, 그 구간의 접근 제한은 운영자가 맡는다.
+
+문맥 길이와 출력 한도:
+
+- 한 요청의 입력 토큰과 `max_tokens`의 합이 `--max-model-len`을 넘으면 안 된다. `max_tokens`는 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`(기본 6000)다.
+- 입력은 시스템 프롬프트, 이전 요약, 새 이벤트 본문, 구조 신호다. 코드가 정한 상한은 다음과 같다. 이벤트 본문은 `max-input-chars`(6000자)까지인데, 완료된 작업의 상태 변경은 내용과 결과를 이어 붙여 약 12,000자까지 간다. 이전 요약은 세 배열 합쳐 60개 항목까지이고 항목의 각 문장도 6000자까지 허용되므로, 실제 크기는 이전 출력(`max_tokens` 이하)이 정한다. 구조 신호의 미답변 질문은 질문당 300자이고 개수 제한이 없다.
+- 한국어는 토크나이저에 따라 글자당 1~2토큰이 들 수 있다. 이 가정으로 어림하면 12,000자 이벤트가 1만 2천~2만 4천 토큰이고, 이전 요약이 최대 약 6천 토큰이라 입력이 1만 8천~3만 토큰이 된다(재지 않았다). 여기에 출력 6000을 더하면 높은 쪽에서는 32768을 넘는다. 그런 요청은 거절되고 그 이벤트는 요약에서 빠진다. 보통 크기의 이벤트에는 32768이 맞지만 여유 있는 값은 아니며, 문맥이 8k·16k인 모델은 기본 `max_tokens`로는 맞지 않는다.
+- 문맥이 더 짧은 모델을 쓰면 `VLLM_MAX_MODEL_LEN`을 그 길이로 낮추고 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`도 함께 낮춘다. 출력 한도가 요약보다 작으면 `cut off at max_tokens` 오류가 난다(위 "추론 구현" 참조). 입력이 문맥을 넘는 요청은 vLLM이 거절하고, 그 이벤트는 다른 추론 실패처럼 재시도 뒤 요약에서 빠진다.
+
+시작 순서와 장애:
+
+- `app`은 `vllm`이 준비될 때까지 기다린다. `vllm`이 헬스체크 시간(시작 유예 `VLLM_START_PERIOD` 기본 10분 + 15초 간격 20회, 기본값으로 약 15분) 안에 준비되지 못하거나 시작 중에 종료되면 `docker compose up`이 실패하고 `app`이 시작되지 않는다. 이때는 요약만이 아니라 작업·질문·답변 API 전체가 내려가 있다. 원인은 모델 내려받기가 오래 걸리는 경우, `VLLM_MAX_MODEL_LEN`이 모델이 지원하는 길이보다 큰 경우, GPU 메모리 부족 등이다. `vllm`에는 재시작 정책을 두지 않았다. 시작 중에 죽은 컨테이너를 계속 다시 띄우면 `up`이 원인 표시 없이 끝없이 기다리기 때문이다. 실행 중에 `vllm`이 죽으면 운영자가 다시 띄운다. `docker compose logs vllm`으로 확인하고, 내려받기가 오래 걸리면 `VLLM_START_PERIOD`를 늘리거나 `vllm`만 먼저 띄워(`up -d vllm`) 모델을 받아 둔다. `vllm`이 준비된 뒤 같은 `up` 명령을 다시 실행한다.
+- 실행 중에 추론이 실패한 이벤트는 `devlink.outbox.max-attempts`회(기본 5회, 재시도 간격 1·2·4·8초) 뒤 영구 실패로 남아 요약에 반영되지 않는다. vLLM이 꺼져 있어 바로 실패하면 약 15초, 응답 없이 멈춰 있으면 시도마다 제한 시간까지 더 기다린 뒤다. vLLM이 그보다 오래 멈춰 있으면 그동안의 이벤트가 요약에서 빠진다. 이미 떠 있는 `app`의 작업·질문·답변은 영향받지 않는다.
+- 요약보다 서버 가동을 우선하려면 `docker-compose.vllm.yml`을 고쳐 `app`의 `depends_on`에서 `vllm`을 뺀다(Compose가 두 파일의 `depends_on`을 합치므로 명령줄로는 뺄 수 없다). 그러면 vLLM이 준비되기 전의 이벤트가 위와 같이 빠진다.
+- 서버 시작 로그의 `Team context inference uses vllm with model …` 줄로 이 구성이 적용됐는지 확인한다. 이 줄이 없으면 구조 신호 전용으로 동작하고 있다.
+
+확인 방법(자체 호스팅 주소가 닿는 곳에서):
+
+```bash
+TEAM_CONTEXT_LIVE=true TEAM_CONTEXT_INFERENCE_BASE_URL=http://<vLLM 주소>:8000/v1 TEAM_CONTEXT_INFERENCE_MODEL=<모델 ID> \
+TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false OPENROUTER_API_KEY= ./gradlew test --tests '*TeamContextInferenceLiveTest' -i
+```
+
+여섯 이벤트를 차례로 넣어 스키마와 근거 좌표를 검사하고, 합의 사항 유지와 미해결 쟁점 포착 여부, 호출 지연을 출력한다. 셸에 OpenRouter 키가 남아 있으면 서버 규칙대로 그 키를 다른 주소로 보내지 않아 테스트가 실패하므로 명령에서 비운다.
+
+확인하지 못한 것(2026-11-12):
+
+- 실제 vLLM 서버로는 실행하지 않았다. 이 구성 파일은 Compose 문법 검사와, 같은 요청을 받는 가짜 서버로만 확인했다.
+- vLLM이 `json_schema`의 `strict` 키를 받는지, 문맥 길이를 넘는 요청에 어떤 응답을 주는지, 헬스체크 명령이 이미지 안에서 동작하는지는 실제 실행으로 확인해야 한다.
+- "시작 순서와 장애"에 적은 Compose 동작(`vllm`이 준비되지 못하면 `up`이 실패하고 `app`이 시작되지 않는다)은 Compose의 일반 동작에서 따온 것이고 이 구성으로 실행해 본 것이 아니다.
+- 어떤 모델이 이 요약에 맞는지는 재지 않았다.
+
 ## 검증
 
 | 대상 | 테스트 |
@@ -106,7 +165,7 @@ devlink:
 | 엔티티 추출 | `TeamContextExtractorTest` |
 | 구조 전용 추론 | `StructuralTeamContextInferenceClientTest` |
 | OpenAI 호환 요청·응답·오류, 제공자 필터의 적용 범위 | `OpenAiCompatibleTeamContextInferenceClientTest` (MockRestServiceServer) |
-| 설정 기본값과 환경 변수 연결(키 이름, 읽지 않는 이전 키 이름, 주소를 지정한 구성, 키 불일치 경고) | `TeamContextInferenceWiringTest` |
+| 설정 기본값과 환경 변수 연결(키 이름, 읽지 않는 이전 키 이름, 주소를 지정한 구성, 키 불일치 경고, vLLM 구성이 넘기는 값) | `TeamContextInferenceWiringTest` |
 | 실제 엔드포인트에서의 증분 요약(선택 실행) | `TeamContextInferenceLiveTest` |
 | 요약 정규화·JSON 왕복 | `TeamContextSummaryTest` |
 | Outbox → 갱신 → 조회 전체, 중복 반영 방지, 잘못된 메시지 영구 실패, 인증·검증 오류 | `TeamContextIntegrationTest` (Testcontainers) |

@@ -80,6 +80,16 @@ public record TeamContextSettings(boolean enabled, String baseUrl, String apiKey
         }
     }
 
+    /** 로그에 남길 호출 대상 호스트. 주소에 섞인 경로·질의·인증 정보는 남기지 않는다. */
+    public String endpointHost() {
+        try {
+            String host = URI.create(baseUrl).getHost();
+            return host == null ? "unknown host" : host;
+        } catch (IllegalArgumentException exception) {
+            return "unknown host";
+        }
+    }
+
     /** 주소가 OpenRouter인지. */
     public boolean openRouter() {
         return openRouterHost(baseUrl);

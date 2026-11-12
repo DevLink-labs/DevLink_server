@@ -50,6 +50,9 @@ public class TeamContextInferenceConfig {
             log.warn("Team context inference calls OpenRouter without the provider guard; requests may be routed to "
                     + "providers that ignore the JSON schema or collect inputs");
         }
+        // 구조 신호 전용과 LLM 요약, OpenRouter와 자체 호스팅을 시작 로그에서 구분할 수 있게 한다. 키는 남기지 않는다.
+        log.info("Team context inference uses {} with model {} (timeout {} ms)", settings.endpointHost(),
+                settings.model(), settings.timeoutMs());
         HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(Duration.ofMillis(settings.timeoutMs()));
