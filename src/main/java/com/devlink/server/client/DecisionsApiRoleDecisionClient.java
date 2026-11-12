@@ -1,5 +1,6 @@
 package com.devlink.server.client;
 
+import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,14 +19,15 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 
 /**
- * Gemini Decisions API(`POST /v1beta/decisions`) 클라이언트다.
- * 질문을 input으로, 태그마다 noul(예/아니오) 질문 하나를 보내 한 번의 호출로 모든 태그의 일치 확률을 받는다.
+ * Decisions API 클라이언트다. 기본 대상은 OpenRouter(`POST https://openrouter.ai/api/alpha/decisions`)이며,
+ * 주소는 설정이라 같은 요청·응답 형식을 쓰는 자체 호스팅 서버로 바꿀 수 있다(그 호환은 가정이며 확인하지 않았다).
+ * 질문을 state로, 태그마다 noul(예/아니오) 질문 하나를 보내 한 번의 호출로 모든 태그의 일치 확률을 받는다.
  * 텍스트를 생성하지 않으며, 응답은 확률 숫자만 읽는다.
  */
-public class GeminiRoleDecisionClient implements RoleDecisionClient {
-    /** 한 요청에 묻는 태그 수 상한이다. API 한도(1,000)보다 작게 잡아 입력 크기와 지연을 제한한다. */
+public class DecisionsApiRoleDecisionClient implements RoleDecisionClient {
+    /** 한 요청에 묻는 태그 수 상한이다. 입력 크기와 지연을 제한한다. */
     static final int MAX_TAGS = 200;
-    private static final Logger log = LoggerFactory.getLogger(GeminiRoleDecisionClient.class);
+    private static final Logger log = LoggerFactory.getLogger(DecisionsApiRoleDecisionClient.class);
     private static final String INSTRUCTIONS = """
             The input is a question that a developer wants to send to the teammate responsible for its topic.
             A teammate declared the responsibility tag below. Answer yes only if the question is clearly about \
@@ -38,7 +40,7 @@ public class GeminiRoleDecisionClient implements RoleDecisionClient {
     private final ObjectMapper mapper;
     private final DecisionModelSettings settings;
 
-    public GeminiRoleDecisionClient(RestClient client, ObjectMapper mapper, DecisionModelSettings settings) {
+    public DecisionsApiRoleDecisionClient(RestClient client, ObjectMapper mapper, DecisionModelSettings settings) {
         this.client = client;
         this.mapper = mapper;
         this.settings = settings;
@@ -76,7 +78,7 @@ public class GeminiRoleDecisionClient implements RoleDecisionClient {
         List<String> asked = tags.stream().distinct().limit(MAX_TAGS).toList();
         ObjectNode body = mapper.createObjectNode();
         body.put("model", settings.model());
-        body.put("input", question);
+        body.put("state", question);
         ObjectNode questions = body.putObject("questions");
         for (int index = 0; index < asked.size(); index++) {
             // 질문 키는 ASCII 제약이 있어 태그 원문 대신 순번을 쓴다.
@@ -86,9 +88,14 @@ public class GeminiRoleDecisionClient implements RoleDecisionClient {
         JsonNode response;
         try {
             response = client.post()
-                    .uri("/v1beta/decisions")
+                    .uri(URI.create(settings.url()))
                     .contentType(MediaType.APPLICATION_JSON)
-                    .header("x-goog-api-key", settings.apiKey())
+                    .headers(headers -> {
+                        // 키 없이 쓰는 자체 호스팅 서버에는 인증 헤더를 보내지 않는다.
+                        if (!settings.apiKey().isEmpty()) {
+                            headers.setBearerAuth(settings.apiKey());
+                        }
+                    })
                     .body(body)
                     .retrieve()
                     .body(JsonNode.class);

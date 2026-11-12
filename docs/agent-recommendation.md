@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | RecommendationTokenizer | NFKC, camelCase·약어·영문/한글 경계 분리, 소문자화, 문자·숫자 이외 구분 | 경로 토큰은 확장자를 빼고 한 글자·숫자만인 토큰 제외 |
 | RecommendationRoleMatcher | 태그 토큰 연속열 일치, 마지막 한글 토큰의 조사 허용, roleDescription fallback 최대 10개 | 영문 태그 뒤 조사는 토큰화에서 이미 분리됨. 모델이 일치로 판정한 태그를 더한다 |
-| RoleDecisionClient | 토큰으로 일치하지 않은 역할 태그가 질문의 담당 범위에 드는지 결정 모델에 질의 | 기본은 호출하지 않는 구현. 켜져 있고 키가 있으면 GeminiRoleDecisionClient |
+| RoleDecisionClient | 토큰으로 일치하지 않은 역할 태그가 질문의 담당 범위에 드는지 결정 모델에 질의 | 기본은 호출하지 않는 구현. 설정이 갖춰지면 DecisionsApiRoleDecisionClient |
 | RecommendationGitEvidenceService | 직접 파일 매칭, import 역방향 확장, 사용자별 Git 근거 집계 | 저장소 ID와 상대 경로를 함께 사용해 파일을 구분 |
 | RecommendationScorePolicy | 역할 20×min(일치 태그 수, 3), 작업·빈도·최근성 점수와 표시 반올림 | Git 점수는 아래 가중치 산식을 적용하며 순위 비교에는 반올림 전 값을 사용 |
 | AgentRecommendationService | 검증·권한·후보 선택·응답 조립 | DataAccessException은 503 GIT_ROUTING_UNAVAILABLE |
@@ -51,33 +51,42 @@ OFFLINE 후보를 선택한 후의 작업 요청은 생성과 전달 결과를 �
 
 ## 역할 태그 결정 모델 보강 (선택, 기본 꺼짐)
 
-역할 태그는 토큰 연속열이 질문에 그대로 나타날 때만 일치하므로 "로그인" 태그는 "login 오류" 질문을 놓친다. 이 판정에 한해 Gemini Decisions API(`gemini-decision-1`, `POST /v1beta/decisions`)를 보강으로 쓸 수 있다. 텍스트를 생성하지 않고 질문별 확률만 돌려주는 모델이다.
+역할 태그는 토큰 연속열이 질문에 그대로 나타날 때만 일치하므로 "로그인" 태그는 "login 오류" 질문을 놓친다. 이 판정에 한해 결정 모델을 보강으로 쓸 수 있다. 기본 대상은 OpenRouter Decisions API(`POST https://openrouter.ai/api/alpha/decisions`)의 `google/gemini-decision-1`이다. 텍스트를 생성하지 않고 질문별 확률만 돌려주는 모델이다.
 
 - 최종 일치 태그는 토큰 일치와 모델 일치의 합집합이다. 모델은 일치를 추가만 하며 토큰으로 일치한 태그를 빼지 않는다.
 - 모델로 더하는 태그는 Agent당 선언 순서상 첫 하나(20점)뿐이다. 무엇에나 맞도록 쓴 태그 여러 개로 역할 60점을 채워 Git 근거(최대 40점)를 앞지르지 못하게 하기 위한 제한이다. 그래도 넓은 태그 하나는 20점을 얻을 수 있으므로 임계값은 평가 세트로 정한다.
 - 명시 태그(`roles`)만 모델에 묻는다. `roles`가 비어 역할 설명을 나눈 fallback 태그는 자유 문장이라 보내지 않고 모델 일치도 받지 않는다.
 - 점수식(20 × min(일치 태그 수, 3)), Git 점수, 후보 선택, 응답 형식과 오류 코드는 그대로다. 응답에는 모델로 일치했는지 표시하지 않는다.
-- 요청당 호출은 한 번이다. 질문을 `input`으로, 후보들의 태그 중 토큰으로 일치하지 않은 것을 중복 없이 태그당 `noul`(예/아니오) 질문 하나로 보낸다. 한 요청에 최대 200개까지 묻고 넘는 태그는 토큰 판정만 쓴다. 요청 Agent 자신의 태그는 보내지 않는다.
+- 요청당 호출은 한 번이다. 질문을 `state`로, 후보들의 태그 중 토큰으로 일치하지 않은 것을 중복 없이 태그당 `noul`(예/아니오) 질문 하나로 보낸다. 한 요청에 최대 200개까지 묻고 넘는 태그는 토큰 판정만 쓴다. 요청 Agent 자신의 태그는 보내지 않는다.
 - `noul` 확률이 `threshold`(기본 0.7) 이상이면 일치로 본다.
-- 꺼짐, 키 없음, 시간 초과, 200이 아닌 응답, 형식이 다른 응답, 답이 하나라도 빠진 응답이면 그 요청 전체를 토큰 일치만으로 계산한다. 이때 응답은 기능을 끈 경우와 같다. 실패는 경고 로그 한 줄로 남기며 키, 질문, 응답 본문은 기록하지 않는다.
+- 꺼짐, 설정 미비(키가 필요한데 없음), 시간 초과, 200이 아닌 응답, 형식이 다른 응답, 답이 하나라도 빠진 응답이면 그 요청 전체를 토큰 일치만으로 계산한다. 이때 응답은 기능을 끈 경우와 같다. 실패는 경고 로그 한 줄로 남기며 키, 질문, 응답 본문은 기록하지 않는다.
 - 호출 순서는 멤버십 확인과 태그 수집(읽기 트랜잭션) → 모델 호출(트랜잭션 밖) → 기존 평가(읽기 트랜잭션)다. 외부 호출 동안 DB 연결을 잡지 않는다. 두 트랜잭션 사이에 태그가 바뀌면 새 태그는 토큰 판정만 받는다.
-- 켜면 **질문 본문과 팀원의 명시 역할 태그가 Google API로 전송된다.** 역할 설명, 파일 경로, 커밋, Agent·사용자 ID는 보내지 않는다. 태그와 질문에 사용자가 직접 적은 내용은 그대로 나간다.
+- 켜면 **질문 본문과 팀원의 명시 역할 태그가 설정한 주소로 전송된다.** 기본 설정에서는 OpenRouter를 거쳐 모델 제공자로 간다([모델 페이지](https://openrouter.ai/google/gemini-decision-1) 기준 `google/gemini-decision-1`의 제공자는 Google AI Studio 하나다, 2026-11-12 확인). 자체 호스팅 주소를 쓰면 그 서버까지만 간다. OpenRouter 호출에는 제공자 선택이나 데이터 수집 거부 같은 `provider` 설정을 보내지 않는다(팀·파트 Context 추론과 다른 점이다. Decisions 엔드포인트가 그 설정을 받는지 확인하지 않았다). 역할 설명, 파일 경로, 커밋, Agent·사용자 ID는 보내지 않는다. 태그와 질문에 사용자가 직접 적은 내용은 그대로 나간다.
 - 모든 태그 질문이 한 요청에 들어간다. API 문서는 질문을 서로 독립적으로 평가한다고 하지만, 한 태그의 문구가 다른 태그의 판정에 영향을 주지 않는지는 실제 모델로 확인하지 않았다.
 - 추천 요청마다 유료 호출이 한 번 생긴다. 결과 캐시와 호출 빈도 제한은 없다.
-- 설정 범위(시간 제한, 임계값, https 주소)는 기능이 꺼져 있어도 시작 시점에 검증한다. 잘못된 값이 있으면 서버가 뜨지 않는다.
+- 설정 범위(시간 제한, 임계값, 주소 형식)는 기능이 꺼져 있어도 시작 시점에 검증한다. 잘못된 값이 있으면 서버가 뜨지 않는다.
 
 설정은 `devlink.recommendation.decision-model.*`이며 환경 변수로 받는다.
 
 | 환경 변수 | 기본값 | 설명 |
 | --- | --- | --- |
-| DECISION_MODEL_ENABLED | false | true이고 키가 있을 때만 호출한다 |
-| DECISION_MODEL_API_KEY | (없음) | `x-goog-api-key` 헤더로만 쓴다 |
-| DECISION_MODEL_MODEL | gemini-decision-1 | |
-| DECISION_MODEL_BASE_URL | https://generativelanguage.googleapis.com | https만 받는다. http는 호스트가 localhost·127.0.0.1·[::1]일 때만 |
+| DECISION_MODEL_ENABLED | false | true이고 아래 조건이 갖춰질 때만 호출한다 |
+| DECISION_MODEL_API_KEY | (없음) | 기본 주소에서는 OpenRouter API 키. `DECISION_MODEL_URL`로 `Authorization: Bearer` 헤더에 실려 간다. 비어 있으면 헤더를 보내지 않는다 |
+| DECISION_MODEL_MODEL | google/gemini-decision-1 | OpenRouter의 Decisions 모델 ID, 또는 자체 호스팅 서버가 받는 모델 이름 |
+| DECISION_MODEL_URL | https://openrouter.ai/api/alpha/decisions | 호출할 엔드포인트 전체 주소. 키가 있으면 https만 받는다(호스트가 localhost·127.0.0.1·[::1]이면 http 허용). 키가 없으면 다른 호스트의 http도 받는다 |
+| DECISION_MODEL_REQUIRE_API_KEY | true | false면 키 없이 켠다. 인증이 없는 자체 호스팅 서버용이다 |
 | DECISION_MODEL_TIMEOUT_MS | 1500 | 연결과 응답 대기 제한. 연결·응답 헤더·본문을 합친 제한. 브로커의 중앙 호출 제한이 5초라 최대 2000 |
 | DECISION_MODEL_THRESHOLD | 0.7 | 0과 1 사이 |
 
-검증은 GeminiRoleDecisionClientTest의 요청 형식·임계값·실패 유형별 빈 결과, GeminiRoleDecisionClientHttpTest의 실제 HTTP 요청과 응답 헤더·본문 지연 시 시간 제한, AgentRecommendationRoleDecisionTest의 점수 보강·Agent당 한 태그 제한·실패 시 동일 응답·비멤버 차단·트랜잭션 밖 호출, RoleDecisionWiringTest의 환경 변수 연결로 수행한다. 평가 세트는 `src/test/resources/recommendation/role-decision-eval.txt`에 있고, 실제 모델의 정확도와 지연은 `DECISION_MODEL_EVAL=true`와 키를 환경 변수로 두고 `./gradlew test --tests '*RoleDecisionEvaluationTest' -i`로 잰다. 모델의 지연, 한국어 정확도, 가격, 호출 한도, 데이터 보관 조건은 이 측정 전까지 확인되지 않은 상태다.
+자체 호스팅: `DECISION_MODEL_URL`과 `DECISION_MODEL_MODEL`을 바꿔 다른 서버를 쓸 수 있다. 인증이 없으면 `DECISION_MODEL_REQUIRE_API_KEY=false`로 둔다.
+
+- 그 서버가 이 요청(`{model, state, questions}`, 질문마다 `type: noul`과 `instructions`)을 받고 `answers.<키>.noul`로 답한다는 것은 가정이다. [OpenRouter 문서](https://openrouter.ai/docs/guides/community/multimodal-decisions)는 TypeSafe 자체 API(api.typesafe.ai)용으로 쓴 요청이 OpenRouter에서 그대로 동작한다고만 적고 있고, 반대 방향의 호환은 확인하지 않았다. 실제 자체 호스팅 결정 모델 서버로 실행해 보지 않았다. 형식이 다르면 모든 요청이 토큰 일치로 계산되고 경고 로그만 남는다.
+- `DECISION_MODEL_API_KEY`는 OpenRouter 전용이 아니다. 값이 있으면 `DECISION_MODEL_URL`이 어디든 그 주소로 Bearer 헤더에 실려 간다. 주소를 바꿀 때는 키도 비우거나 그 서버의 키로 바꾼다.
+- http 주소에서는 질문과 태그가 암호화되지 않은 채 전송되고 응답의 출처도 확인되지 않는다. 경로상의 누군가가 질문을 읽거나 응답을 바꿔 Agent당 한 태그(20점)의 일치를 더할 수 있다. http는 신뢰하는 사설망에서만 쓰고 그 밖에는 https를 쓴다.
+- 켜 두었는데 설정이 갖춰지지 않으면(주소·모델 없음, 필요한 키 없음) 호출하지 않으며 시작할 때 경고 로그를 한 줄 남긴다.
+- Google의 Decisions API를 직접 부르는 형식(`x-goog-api-key`, 본문 `input`)은 지원하지 않는다.
+
+검증은 DecisionsApiRoleDecisionClientTest의 요청 형식(주소, Bearer 인증, `state`)·임계값·실패 유형별 빈 결과·키 없는 자체 호스팅 호출, DecisionsApiRoleDecisionClientHttpTest의 실제 HTTP 요청과 응답 헤더·본문 지연 시 시간 제한, AgentRecommendationRoleDecisionTest의 점수 보강·Agent당 한 태그 제한·실패 시 동일 응답·비멤버 차단·트랜잭션 밖 호출, RoleDecisionWiringTest의 환경 변수 연결·자체 호스팅 구성·켰지만 설정이 모자랄 때의 경고 로그로 수행한다. 평가 세트는 `src/test/resources/recommendation/role-decision-eval.txt`에 있고, 실제 모델의 정확도와 지연은 `DECISION_MODEL_EVAL=true`와 키(키 없는 자체 호스팅 서버는 `DECISION_MODEL_REQUIRE_API_KEY=false`)를 환경 변수로 두고 `./gradlew test --tests '*RoleDecisionEvaluationTest' -i`로 잰다. 모델의 지연, 한국어 정확도, 가격, 호출 한도, 데이터 보관 조건은 이 측정 전까지 확인되지 않은 상태다.
 
 ## 한계
 

@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import com.devlink.server.client.GeminiRoleDecisionClient;
+import com.devlink.server.client.DecisionsApiRoleDecisionClient;
 import com.devlink.server.config.DecisionModelSettings;
 import com.devlink.server.config.RoleDecisionConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 역할 태그 판정 평가 세트(recommendation/role-decision-eval.txt)를 다룬다.
  * 실제 모델 측정은 기본 테스트 실행에서 건너뛴다. 실행하려면 환경 변수 DECISION_MODEL_EVAL=true와
  * DECISION_MODEL_API_KEY를 두고 {@code ./gradlew test --tests '*RoleDecisionEvaluationTest' -i}를 실행한다.
+ * 주소·모델·키 필요 여부는 운영과 같은 DECISION_MODEL_URL, DECISION_MODEL_MODEL, DECISION_MODEL_REQUIRE_API_KEY로 바꾼다.
  * 질문마다 운영 경로와 같이 토큰으로 일치하지 않은 태그만 한 번에 묻는다.
  */
 class RoleDecisionEvaluationTest {
@@ -39,12 +40,16 @@ class RoleDecisionEvaluationTest {
     @Test
     @EnabledIfEnvironmentVariable(named = "DECISION_MODEL_EVAL", matches = "true")
     void reportsAccuracyAndLatencyAgainstTheRealModel() throws IOException {
-        String apiKey = System.getenv("DECISION_MODEL_API_KEY");
-        assertThat(apiKey).as("DECISION_MODEL_API_KEY").isNotBlank();
+        // 운영과 같은 환경 변수를 읽는다. 키 없는 자체 호스팅 서버는 DECISION_MODEL_REQUIRE_API_KEY=false로 잰다.
+        boolean requireApiKey = !"false".equalsIgnoreCase(env("DECISION_MODEL_REQUIRE_API_KEY", "true"));
+        String apiKey = env("DECISION_MODEL_API_KEY", "");
+        if (requireApiKey) {
+            assertThat(apiKey).as("DECISION_MODEL_API_KEY").isNotBlank();
+        }
         DecisionModelSettings settings = new DecisionModelSettings(true,
-                env("DECISION_MODEL_BASE_URL", "https://generativelanguage.googleapis.com"), apiKey,
-                env("DECISION_MODEL_MODEL", "gemini-decision-1"), 2000, 0.7);
-        GeminiRoleDecisionClient client = (GeminiRoleDecisionClient) new RoleDecisionConfig()
+                env("DECISION_MODEL_URL", "https://openrouter.ai/api/alpha/decisions"), apiKey, requireApiKey,
+                env("DECISION_MODEL_MODEL", "google/gemini-decision-1"), 2000, 0.7);
+        DecisionsApiRoleDecisionClient client = (DecisionsApiRoleDecisionClient) new RoleDecisionConfig()
                 .roleDecisionClient(settings, RestClient.builder(), new ObjectMapper());
 
         Map<String, List<Case>> byQuestion = new LinkedHashMap<>();

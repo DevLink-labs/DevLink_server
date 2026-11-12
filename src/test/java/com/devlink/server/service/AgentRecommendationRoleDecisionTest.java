@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.IntSupplier;
-import com.devlink.server.client.GeminiRoleDecisionClient;
+import com.devlink.server.client.DecisionsApiRoleDecisionClient;
 import com.devlink.server.client.RoleDecisionClient;
 import com.devlink.server.common.BusinessException;
 import com.devlink.server.common.ErrorCode;
@@ -60,7 +60,7 @@ class AgentRecommendationRoleDecisionTest {
     private static final long TEAM = 7L;
     private static final AgentPrincipal REQUESTER = new AgentPrincipal(10L, 100L, TEAM);
     private static final String QUESTION = "로그인 세션이 자꾸 풀려요";
-    private static final String URL = "https://generativelanguage.googleapis.com";
+    private static final String URL = "https://openrouter.ai/api/alpha/decisions";
 
     private final AgentRepository agents = mock(AgentRepository.class);
     private final TeamAuthorizationService teams = mock(TeamAuthorizationService.class);
@@ -114,13 +114,14 @@ class AgentRecommendationRoleDecisionTest {
                 agent(21L, 200L, "인증 Agent", List.of("로그인", "authentication")),
                 agent(23L, 300L, "결제 Agent", List.of("결제"))));
         AgentRecommendationRequest request = new AgentRecommendationRequest(QUESTION, null);
-        RestClient.Builder builder = RestClient.builder().baseUrl(URL);
+        RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        server.expect(requestTo(URL + "/v1beta/decisions")).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
-        server.expect(requestTo(URL + "/v1beta/decisions"))
+        server.expect(requestTo(URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        server.expect(requestTo(URL))
                 .andRespond(withSuccess("{\"answers\":{}}", MediaType.APPLICATION_JSON));
-        RoleDecisionClient failing = new GeminiRoleDecisionClient(builder.build(), new ObjectMapper(),
-                new DecisionModelSettings(true, URL, "synthetic-decision-key-never-print", "gemini-decision-1", 1500, 0.7));
+        RoleDecisionClient failing = new DecisionsApiRoleDecisionClient(builder.build(), new ObjectMapper(),
+                new DecisionModelSettings(true, URL, "synthetic-decision-key-never-print", true, "google/gemini-decision-1",
+                        1500, 0.7));
 
         AgentRecommendationResponse disabled = service(RoleDecisionClient.disabled()).recommend(TEAM, REQUESTER, request);
 

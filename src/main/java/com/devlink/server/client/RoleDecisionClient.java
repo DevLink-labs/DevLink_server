@@ -14,7 +14,7 @@ public interface RoleDecisionClient {
      */
     Set<String> matchedTags(String question, List<String> tags);
 
-    /** 기능이 꺼져 있거나 키가 없을 때 쓰는 구현이다. 외부 호출을 하지 않는다. */
+    /** 기능이 꺼져 있거나 설정이 갖춰지지 않았을 때 쓰는 구현이다. 외부 호출을 하지 않는다. */
     static RoleDecisionClient disabled() {
         return new RoleDecisionClient() {
             @Override

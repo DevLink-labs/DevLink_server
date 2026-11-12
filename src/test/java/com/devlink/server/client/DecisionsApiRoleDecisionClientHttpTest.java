@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 운영과 같은 JDK HTTP 클라이언트 구성({@link RoleDecisionConfig})으로 루프백 서버에 실제 요청을 보낸다.
  * 시간 제한이 응답 헤더 지연과 본문 지연 모두에서 호출을 끊는지 확인한다.
  */
-class GeminiRoleDecisionClientHttpTest {
+class DecisionsApiRoleDecisionClientHttpTest {
     private static final String KEY = "synthetic-decision-key-never-print";
     /** 지연 시험용 짧은 제한. 정상 응답 시험은 느린 CI에서도 넘기지 않을 넉넉한 제한을 쓴다. */
     private static final long TIMEOUT_MS = 300;
@@ -57,15 +57,39 @@ class GeminiRoleDecisionClientHttpTest {
         AtomicReference<String> receivedKey = new AtomicReference<>();
         AtomicReference<String> receivedBody = new AtomicReference<>();
         handle(exchange -> {
-            receivedKey.set(exchange.getRequestHeaders().getFirst("x-goog-api-key"));
+            receivedKey.set(exchange.getRequestHeaders().getFirst("Authorization"));
             receivedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             respond(exchange, "{\"answers\":{\"t0\":{\"type\":\"noul\",\"noul\":0.91,\"confidence\":0.91}}}");
         });
 
         assertThat(client(GENEROUS_TIMEOUT_MS).matchedTags("login 오류", List.of("로그인")))
                 .containsExactly("로그인");
-        assertThat(receivedKey.get()).isEqualTo(KEY);
-        assertThat(receivedBody.get()).contains("\"input\":\"login 오류\"").doesNotContain(KEY);
+        assertThat(receivedKey.get()).isEqualTo("Bearer " + KEY);
+        assertThat(receivedBody.get()).contains("\"state\":\"login 오류\"").doesNotContain(KEY);
+    }
+
+    @Test
+    void keylessSelfHostedUrlIsCalledAsWrittenWithoutAnAuthorizationHeader() {
+        AtomicReference<String> receivedTarget = new AtomicReference<>();
+        AtomicReference<Boolean> hadAuthorization = new AtomicReference<>();
+        server.createContext("/v1/decisions", exchange -> {
+            try (exchange) {
+                receivedTarget.set(exchange.getRequestURI().toString());
+                hadAuthorization.set(exchange.getRequestHeaders().containsKey("Authorization"));
+                exchange.getRequestBody().readAllBytes();
+                respond(exchange, "{\"answers\":{\"t0\":{\"type\":\"noul\",\"noul\":0.91}}}");
+            }
+        });
+        DecisionModelSettings settings = new DecisionModelSettings(true,
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/v1/decisions?tenant=a%20b", "", false,
+                "cloudflare/clef-flash", GENEROUS_TIMEOUT_MS, 0.7);
+        RoleDecisionClient keyless = new RoleDecisionConfig().roleDecisionClient(settings, RestClient.builder(),
+                new ObjectMapper());
+
+        assertThat(keyless.matchedTags("login 오류", List.of("로그인"))).containsExactly("로그인");
+        // 경로와 쿼리는 설정에 적은 그대로 간다.
+        assertThat(receivedTarget.get()).isEqualTo("/v1/decisions?tenant=a%20b");
+        assertThat(hadAuthorization.get()).isFalse();
     }
 
     @Test
@@ -108,12 +132,13 @@ class GeminiRoleDecisionClientHttpTest {
 
     private RoleDecisionClient client(long timeoutMs) {
         DecisionModelSettings settings = new DecisionModelSettings(true,
-                "http://127.0.0.1:" + server.getAddress().getPort(), KEY, "gemini-decision-1", timeoutMs, 0.7);
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/api/alpha/decisions", KEY, true,
+                "google/gemini-decision-1", timeoutMs, 0.7);
         return new RoleDecisionConfig().roleDecisionClient(settings, RestClient.builder(), new ObjectMapper());
     }
 
     private void handle(HttpHandler handler) {
-        server.createContext("/v1beta/decisions", exchange -> {
+        server.createContext("/api/alpha/decisions", exchange -> {
             try (exchange) {
                 handler.handle(exchange);
             } catch (IOException ignored) {

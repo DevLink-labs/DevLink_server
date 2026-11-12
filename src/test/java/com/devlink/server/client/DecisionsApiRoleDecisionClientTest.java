@@ -26,31 +26,30 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-/** Gemini Decisions API 요청 형식, 임계값 적용, 실패 시 빈 결과를 검증한다. 실제 네트워크는 쓰지 않는다. */
+/** OpenRouter Decisions API 요청 형식, 임계값 적용, 실패 시 빈 결과를 검증한다. 실제 네트워크는 쓰지 않는다. */
 @ExtendWith(OutputCaptureExtension.class)
-class GeminiRoleDecisionClientTest {
-    private static final String URL = "https://generativelanguage.googleapis.com/v1beta/decisions";
+class DecisionsApiRoleDecisionClientTest {
+    private static final String URL = "https://openrouter.ai/api/alpha/decisions";
     private static final String KEY = "synthetic-decision-key-never-print";
     private static final String QUESTION = "sign-in 버튼이 눌리지 않는 untrusted-question-do-not-log";
 
     private final ObjectMapper mapper = new ObjectMapper();
-    private final RestClient.Builder builder = RestClient.builder()
-            .baseUrl("https://generativelanguage.googleapis.com");
+    private final RestClient.Builder builder = RestClient.builder();
     private final MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-    private final GeminiRoleDecisionClient client = new GeminiRoleDecisionClient(builder.build(), mapper,
-            new DecisionModelSettings(true, "https://generativelanguage.googleapis.com", KEY, "gemini-decision-1",
-                    1500, 0.7));
+    private final DecisionsApiRoleDecisionClient client = new DecisionsApiRoleDecisionClient(builder.build(), mapper,
+            new DecisionModelSettings(true, URL, KEY, true, "google/gemini-decision-1", 1500, 0.7));
 
     @Test
     void asksOneNoulQuestionPerDistinctTagAndKeepsTagsAtOrAboveThreshold() {
         server.expect(requestTo(URL))
                 .andExpect(method(HttpMethod.POST))
-                .andExpect(header("x-goog-api-key", KEY))
+                .andExpect(header("Authorization", "Bearer " + KEY))
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(request -> {
                     JsonNode body = mapper.readTree(request.getBody().toString());
-                    assertThat(body.path("model").asText()).isEqualTo("gemini-decision-1");
-                    assertThat(body.path("input").asText()).isEqualTo(QUESTION);
+                    assertThat(body.path("model").asText()).isEqualTo("google/gemini-decision-1");
+                    assertThat(body.path("state").asText()).isEqualTo(QUESTION);
+                    assertThat(body.has("input")).isFalse();
                     JsonNode questions = body.path("questions");
                     assertThat(questions).hasSize(3);
                     assertThat(questions.path("t0").path("type").asText()).isEqualTo("noul");
@@ -70,17 +69,40 @@ class GeminiRoleDecisionClientTest {
 
     @Test
     void asksAtMostTheTagLimit() {
-        List<String> tags = IntStream.range(0, GeminiRoleDecisionClient.MAX_TAGS + 50)
+        List<String> tags = IntStream.range(0, DecisionsApiRoleDecisionClient.MAX_TAGS + 50)
                 .mapToObj(index -> "tag" + index).toList();
-        double[] high = IntStream.range(0, GeminiRoleDecisionClient.MAX_TAGS).mapToDouble(index -> 0.9).toArray();
+        double[] high = IntStream.range(0, DecisionsApiRoleDecisionClient.MAX_TAGS).mapToDouble(index -> 0.9).toArray();
         server.expect(requestTo(URL))
                 .andExpect(request -> assertThat(mapper.readTree(request.getBody().toString()).path("questions"))
-                        .hasSize(GeminiRoleDecisionClient.MAX_TAGS))
+                        .hasSize(DecisionsApiRoleDecisionClient.MAX_TAGS))
                 .andRespond(withSuccess(answers(high), MediaType.APPLICATION_JSON));
 
-        assertThat(client.matchedTags(QUESTION, tags)).hasSize(GeminiRoleDecisionClient.MAX_TAGS)
+        assertThat(client.matchedTags(QUESTION, tags)).hasSize(DecisionsApiRoleDecisionClient.MAX_TAGS)
                 .contains("tag0", "tag199").doesNotContain("tag200");
         server.verify();
+    }
+
+    @Test
+    void selfHostedEndpointWithoutAKeyGetsNoAuthorizationHeader() {
+        String local = "http://192.168.0.10:8000/v1/decisions";
+        RestClient.Builder localBuilder = RestClient.builder();
+        MockRestServiceServer localServer = MockRestServiceServer.bindTo(localBuilder).build();
+        DecisionsApiRoleDecisionClient keyless = new DecisionsApiRoleDecisionClient(localBuilder.build(), mapper,
+                new DecisionModelSettings(true, local, "", false, "cloudflare/clef-flash", 1500, 0.7));
+        localServer.expect(requestTo(local))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(request -> {
+                    assertThat(request.getHeaders().containsKey("Authorization")).isFalse();
+                    JsonNode body = mapper.readTree(request.getBody().toString());
+                    assertThat(body.path("model").asText()).isEqualTo("cloudflare/clef-flash");
+                    assertThat(body.path("state").asText()).isEqualTo(QUESTION);
+                })
+                // OpenRouter 문서의 응답 예처럼 noul 답에 confidence가 없어도 읽는다.
+                .andRespond(withSuccess("{\"model\":\"cloudflare/clef-flash\",\"answers\":{\"t0\":{\"type\":\"noul\","
+                        + "\"noul\":0.8607}},\"usage\":{\"input_tokens\":289,\"output_tokens\":0}}", MediaType.APPLICATION_JSON));
+
+        assertThat(keyless.matchedTags(QUESTION, List.of("로그인"))).containsExactly("로그인");
+        localServer.verify();
     }
 
     @Test
