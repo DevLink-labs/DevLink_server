@@ -167,15 +167,24 @@ TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false OPENROUTER_API_KEY= ./gradlew test 
 - 확인 테스트의 시작 로그는 `Team context inference uses 127.0.0.1 with model Qwen/Qwen3-14B (timeout 60000 ms)`였다. Compose 구성에서는 호스트가 `vllm`, 제한 시간이 120000으로 나온다(실행해 보지 않았다).
 - 키 없는 구성(vLLM에 API 키를 걸지 않고 `TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false`, `OPENROUTER_API_KEY` 비움)으로 여섯 이벤트 테스트를 한 번 돌려 통과했다(Qwen3-14B, 요청 6회, 4xx 응답 없음). 아래 모델별 측정은 공용 장비라 vLLM에 API 키를 걸고, 그 키를 `OPENROUTER_API_KEY`에 넣어 돌렸다.
 
-모델별 결과는 위 "확인 방법"의 여섯 이벤트 테스트를 모델마다 8번 돌린 것이다. 지연은 테스트 한 번 안의 호출 지연 중앙값의 범위이고, GPU를 다른 작업과 나눠 쓰는 상태에서 쟀다. 테스트는 근거 좌표 검사에서 실패하면 그 뒤를 출력하지 않으므로, 합의 유지와 쟁점 포착은 통과한 실행만 센 것이다. 횟수가 적어 비율은 참고값이다. OpenRouter 모델의 같은 측정은 위 "기본 모델 선택"에 있다.
+모델별 결과는 위 "확인 방법"의 여섯 이벤트 테스트를 모델마다 8번 돌린 것이다. 지연은 테스트 한 번 안의 호출 지연 중앙값의 범위이고, GPU를 다른 작업과 나눠 쓰는 상태에서 쟀다. 테스트는 근거 좌표 검사에서 실패하면 그 뒤를 출력하지 않으므로, 합의 유지와 쟁점 포착은 통과한 실행만 센 것이다. 횟수가 적어 비율은 참고값이다. OpenRouter 모델의 같은 측정은 위 "기본 모델 선택"에 있다. 가중치 크기는 Hugging Face가 표시하는 파라미터 수에 2바이트(BF16)를 곱한 값이고 KV 캐시는 별도다. 라이선스는 Hugging Face의 라이선스 표기다. "추가 인자"는 `VLLM_EXTRA_ARGS`에 넣을 값이다.
 
-| 모델 | 추가 인자 | 스키마·근거 통과 | 합의 유지 | 미해결 쟁점 포착 | 호출 지연 중앙값 |
-| --- | --- | --- | --- | --- | --- |
-| `kakaocorp/kanana-1.5-8b-instruct-2505` | 없음 | 7/8 | 7/7 | 5/7 | 0.6~1.2초 |
-| `Qwen/Qwen3-14B` | `--default-chat-template-kwargs '{"enable_thinking":false}'` | 8/8 | 8/8 | 8/8 | 3.8~4.7초 |
-| `K-intelligence/Midm-2.0-Base-Instruct` | 없음 | 7/8 | 6/7 | 7/7 | 1.6~2.3초 |
+| 모델 | 공개 | 가중치 | 라이선스 | 추가 인자 | 스키마·근거 통과 | 합의 유지 | 미해결 쟁점 포착 | 호출 지연 중앙값 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `Qwen/Qwen3.8-27B` | 2026-08 | 56GB | Apache-2.0 | `--max-num-seqs 64 --default-chat-template-kwargs '{"enable_thinking":false}'` | 8/8 | 8/8 | 8/8 | 2.9~6.8초 |
+| `google/gemma-4-12B-it` | 2026-05 | 24GB | Apache-2.0 | 없음 | 8/8 | 8/8 | 8/8 | 1.9~3.7초 |
+| `kakaocorp/kanana-2-30b-a3b-instruct-2601` | 2026-01 | 61GB | kanana-license | 없음 | 7/8 | 7/7 | 2/7 | 0.5~1.4초 |
+| `K-intelligence/Midm-2.0-Base-Instruct` | 2025-07 | 23GB | MIT | 없음 | 7/8 | 6/7 | 7/7 | 1.6~2.3초 |
+| `kakaocorp/kanana-1.5-8b-instruct-2505` | 2025-05 | 16GB | Apache-2.0 | 없음 | 7/8 | 7/7 | 5/7 | 0.6~1.2초 |
+| `Qwen/Qwen3-14B` | 2025-04 | 30GB | Apache-2.0 | `--default-chat-template-kwargs '{"enable_thinking":false}'` | 8/8 | 8/8 | 8/8 | 3.8~4.7초 |
 
-kanana와 Midm의 실패 한 번씩은 둘 다 입력에 없는 근거 좌표(`9:4`)를 만든 경우다. 근거 좌표가 입력에 있는지는 이 테스트만 검사한다. 서버는 검사하지 않으므로 운영에서는 그런 좌표가 요약에 그대로 남는다.
+- 실패 세 번은 모두 입력에 없는 근거 좌표를 만든 경우다(kanana 1.5와 Midm은 `9:4`, kanana-2는 `39:2`). 근거 좌표가 입력에 있는지는 이 테스트만 검사한다. 서버는 검사하지 않으므로 운영에서는 그런 좌표가 요약에 그대로 남는다.
+- 여덟 번 모두 통과하고 합의와 쟁점을 매번 남긴 모델은 Qwen3.8-27B, Gemma 4 12B, Qwen3-14B다. 그중 Gemma 4 12B가 가중치가 가장 작고 지연이 대체로 짧았다.
+- kanana-2 30B(모델 카드 표기로 활성 파라미터 3B)는 kanana 1.5 8B와 함께 지연이 가장 짧은 쪽이었지만, 의견이 갈린 작업을 일곱 번 중 다섯 번 요약에 남기지 않았다. 활성 파라미터가 적어도 가중치 61GB는 모두 올린다.
+- 측정할 때는 GPU를 나눠 쓰느라 `--gpu-memory-utilization`을 낮췄다(nvidia-smi 표시 143,771MiB 장비에서 kanana 1.5는 0.25, Qwen3-14B·Midm·Gemma 4는 0.35, kanana-2·Qwen3.8은 0.55). Compose 구성은 이 값을 지정하지 않아 vLLM 기본값으로 뜬다.
+- Qwen3.8-27B는 0.55에서 `--max-num-seqs` 없이는 뜨지 않았다(`max_num_seqs (1024) exceeds available Mamba cache blocks (436)`). `--max-num-seqs 64`를 주자 떴다. 오류 문구는 `gpu_memory_utilization`을 올리는 방법도 안내하므로, GPU를 혼자 쓰는 구성에서는 이 인자가 필요 없을 수 있다(확인하지 않았다). 요약은 요청을 하나씩 보내므로 작은 값으로 충분하다. 표의 인자를 `VLLM_EXTRA_ARGS`에 넣으면 네 개의 인자로 나뉘는 것은 `docker compose config`로 확인했다.
+- Qwen 두 모델은 생각 출력을 끈 상태로만 쟀다. Gemma 4는 모델 카드가 `enable_thinking=True`를 줄 때 켜진다고 적고 있어 인자를 주지 않았다. 세 모델 모두 생각 출력을 켠 상태의 품질과 지연은 재지 않았다.
+- 표의 위 세 모델(Qwen3.8, Gemma 4, kanana-2)은 같은 날 같은 버전(0.32.0)을 다시 설치한 뒤 쟀다. 아래 세 모델과는 시점과 GPU 부하가 달라 지연을 그대로 비교하기는 어렵다.
 
 확인하지 못한 것(2026-11-12):
 
@@ -184,6 +193,7 @@ kanana와 Midm의 실패 한 번씩은 둘 다 입력에 없는 근거 좌표(`9
 - vLLM 0.32.0 외의 버전. 문맥 초과 요청의 처리는 버전에 따라 다를 수 있다.
 - 호출 사이가 긴 운영 조건. vLLM이 닫은 유휴 연결을 클라이언트가 다시 쓰려다 실패하는 경우가 있는지 보지 못했다. 실패한 이벤트는 outbox 재시도가 다시 보낸다.
 - 표의 모델을 실제 팀 대화로 돌린 품질.
+- 각 모델 라이선스의 사용 조건. 표에는 Hugging Face 표기만 옮겼다. kanana-license의 내용은 읽지 않았다.
 
 ## 검증
 
