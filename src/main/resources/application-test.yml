@@ -15,6 +15,7 @@ devlink:
         inference:
             base-url: ""
             api-key: ""
+            legacy-api-key: ""
             model: ""
     websocket:
         allowed-origins: http://localhost:3000

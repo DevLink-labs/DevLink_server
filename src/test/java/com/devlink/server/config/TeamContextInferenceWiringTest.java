@@ -1,0 +1,189 @@
+package com.devlink.server.config;
+
+import com.devlink.server.client.OpenAiCompatibleTeamContextInferenceClient;
+import com.devlink.server.client.StructuralTeamContextInferenceClient;
+import com.devlink.server.client.TeamContextInferenceClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.web.client.RestClient;
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * application.yml의 기본값과 환경 변수 이름이 팀·파트 Context 추론 설정까지 이어지는지 확인한다.
+ * DB와 네트워크 없이 필요한 빈만 올린다.
+ */
+@ExtendWith(OutputCaptureExtension.class)
+class TeamContextInferenceWiringTest {
+    private static final String OPENROUTER_KEY = "sk-or-v1-synthetic-key-never-print";
+    private static final String UPSTAGE_KEY = "up_synthetic-key-never-print";
+    private static final String KEY_MISMATCH = "does not belong to the configured endpoint";
+    private static final String MODEL_MISMATCH = "non-OpenRouter endpoint with the OpenRouter default model";
+    private static final String NO_GUARD = "without the provider guard";
+
+    private final ApplicationContextRunner runner = new ApplicationContextRunner()
+            // 개발자 셸의 OPENROUTER_API_KEY 등이 결과를 바꾸지 않게 OS 환경 변수를 뺀다.
+            .withInitializer(context -> context.getEnvironment().getPropertySources()
+                    .remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME))
+            .withInitializer(new ConfigDataApplicationContextInitializer())
+            .withBean(ObjectMapper.class, ObjectMapper::new)
+            .withBean(RestClient.Builder.class, RestClient::builder)
+            .withUserConfiguration(TeamContextSettings.class, TeamContextInferenceConfig.class);
+
+    @Test
+    void withoutAKeyTheSummaryStaysStructural(CapturedOutput output) {
+        runner.run(context -> {
+            assertThat(context.getBean(TeamContextInferenceClient.class)).isInstanceOf(StructuralTeamContextInferenceClient.class);
+            TeamContextSettings settings = context.getBean(TeamContextSettings.class);
+            assertThat(settings.baseUrl()).isEqualTo("https://openrouter.ai/api/v1");
+            assertThat(settings.model()).isEqualTo(TeamContextSettings.DEFAULT_OPENROUTER_MODEL).isEqualTo("upstage/solar-pro4");
+            assertThat(settings.maxOutputTokens()).isEqualTo(6000);
+            assertThat(settings.llmConfigured()).isFalse();
+        });
+        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+    }
+
+    @Test
+    void openRouterKeyAloneSelectsTheDefaultModelWithTheProviderGuard(CapturedOutput output) {
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY).run(context -> {
+            assertThat(context.getBean(TeamContextInferenceClient.class))
+                    .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class);
+            TeamContextSettings settings = context.getBean(TeamContextSettings.class);
+            assertThat(settings.apiKey()).isEqualTo(OPENROUTER_KEY);
+            assertThat(settings.model()).isEqualTo("upstage/solar-pro4");
+            assertThat(settings.openRouterProviderGuard()).isTrue();
+            assertThat(settings.toString()).contains("apiKey=<set>").doesNotContain(OPENROUTER_KEY);
+        });
+        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD, OPENROUTER_KEY);
+    }
+
+    @Test
+    void theOldKeyNameIsReadWhenTheNewOneIsMissingOrEmpty() {
+        // Compose는 설정하지 않은 변수도 빈 값으로 넘긴다. 빈 값은 "없음"으로 다뤄야 이전 이름이 계속 동작한다.
+        runner.withPropertyValues("OPENROUTER_API_KEY=", "UPSTAGE_API_KEY=" + OPENROUTER_KEY)
+                .run(context -> assertThat(context.getBean(TeamContextSettings.class).apiKey()).isEqualTo(OPENROUTER_KEY));
+        runner.withPropertyValues("UPSTAGE_API_KEY=" + OPENROUTER_KEY)
+                .run(context -> assertThat(context.getBean(TeamContextSettings.class).apiKey()).isEqualTo(OPENROUTER_KEY));
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY, "UPSTAGE_API_KEY=" + UPSTAGE_KEY)
+                .run(context -> assertThat(context.getBean(TeamContextSettings.class).apiKey()).isEqualTo(OPENROUTER_KEY));
+    }
+
+    @Test
+    void explicitEndpointSettingsFromAnExistingDeploymentAreKept(CapturedOutput output) {
+        // 예전 템플릿을 따라 OpenRouter와 모델, 필터를 지정한 배포.
+        runner.withPropertyValues("UPSTAGE_API_KEY=" + OPENROUTER_KEY,
+                        "TEAM_CONTEXT_INFERENCE_BASE_URL=https://openrouter.ai/api/v1",
+                        "TEAM_CONTEXT_INFERENCE_MODEL=openai/gpt-4o-mini", "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true")
+                .run(context -> {
+                    TeamContextSettings settings = context.getBean(TeamContextSettings.class);
+                    assertThat(settings.llmConfigured()).isTrue();
+                    assertThat(settings.model()).isEqualTo("openai/gpt-4o-mini");
+                    assertThat(settings.openRouterProviderGuard()).isTrue();
+                });
+        // Upstage를 직접 쓰도록 주소와 모델을 지정한 배포. OpenRouter 전용 필터는 자동으로 빠진다.
+        runner.withPropertyValues("UPSTAGE_API_KEY=" + UPSTAGE_KEY,
+                        "TEAM_CONTEXT_INFERENCE_BASE_URL=https://api.upstage.ai/v1", "TEAM_CONTEXT_INFERENCE_MODEL=solar-pro4")
+                .run(context -> {
+                    assertThat(context.getBean(TeamContextInferenceClient.class))
+                            .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class);
+                    TeamContextSettings settings = context.getBean(TeamContextSettings.class);
+                    assertThat(settings.baseUrl()).isEqualTo("https://api.upstage.ai/v1");
+                    assertThat(settings.openRouterProviderGuard()).isFalse();
+                });
+        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+    }
+
+    @Test
+    void aKeyForAnotherProviderIsNeverSentToTheOpenRouterDefault(CapturedOutput output) {
+        // 주소를 지정하지 않고 Upstage 키만 둔 예전 배포: 기본 주소가 OpenRouter로 바뀌었다.
+        // 그 키를 다른 업체로 보내거나 이벤트를 실패시키지 않고 구조 신호 전용으로 남는다.
+        runner.withPropertyValues("UPSTAGE_API_KEY=" + UPSTAGE_KEY).run(context -> {
+            assertThat(context.getBean(TeamContextInferenceClient.class)).isInstanceOf(StructuralTeamContextInferenceClient.class);
+            TeamContextSettings settings = context.getBean(TeamContextSettings.class);
+            assertThat(settings.keyBelongsElsewhere()).isTrue();
+            assertThat(settings.llmConfigured()).isFalse();
+        });
+        assertThat(output.getAll()).contains(KEY_MISMATCH).doesNotContain(UPSTAGE_KEY);
+    }
+
+    @Test
+    void anOpenRouterKeyLeftBehindIsNeverSentToAnotherProvider(CapturedOutput output) {
+        // OpenRouter에서 Upstage로 바꾸면서 OPENROUTER_API_KEY를 지우지 않은 배포. 새 이름이 먼저 쓰인다.
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY, "UPSTAGE_API_KEY=" + UPSTAGE_KEY,
+                        "TEAM_CONTEXT_INFERENCE_BASE_URL=https://api.upstage.ai/v1", "TEAM_CONTEXT_INFERENCE_MODEL=solar-pro4")
+                .run(context -> assertThat(context.getBean(TeamContextInferenceClient.class))
+                        .isInstanceOf(StructuralTeamContextInferenceClient.class));
+        assertThat(output.getAll()).contains(KEY_MISMATCH).doesNotContain(OPENROUTER_KEY, UPSTAGE_KEY);
+        // OpenRouter 앞의 프록시는 필터를 true로 명시한 구성으로 구분한다.
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY,
+                        "TEAM_CONTEXT_INFERENCE_BASE_URL=https://gateway.example.com/openrouter/v1",
+                        "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true")
+                .run(context -> assertThat(context.getBean(TeamContextInferenceClient.class))
+                        .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class));
+    }
+
+    @Test
+    void openRouterIsNeverCalledWithoutAKey() {
+        // vLLM용 설정에서 주소를 빠뜨린 경우. 키 없이 OpenRouter를 부르면 모든 이벤트가 401로 실패한다.
+        runner.withPropertyValues("TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false")
+                .run(context -> assertThat(context.getBean(TeamContextInferenceClient.class))
+                        .isInstanceOf(StructuralTeamContextInferenceClient.class));
+    }
+
+    @Test
+    void anotherProviderWithoutAModelIsReportedAtStartup(CapturedOutput output) {
+        runner.withPropertyValues("UPSTAGE_API_KEY=" + UPSTAGE_KEY, "TEAM_CONTEXT_INFERENCE_BASE_URL=https://api.upstage.ai/v1")
+                .run(context -> assertThat(context.getBean(TeamContextSettings.class).model()).isEqualTo("upstage/solar-pro4"));
+        assertThat(output.getAll()).contains(MODEL_MISMATCH).doesNotContain(UPSTAGE_KEY);
+    }
+
+    @Test
+    void selfHostedEndpointWorksWithoutAKeyAndWithoutTheOpenRouterField(CapturedOutput output) {
+        runner.withPropertyValues("TEAM_CONTEXT_INFERENCE_BASE_URL=http://127.0.0.1:8000/v1",
+                        "TEAM_CONTEXT_INFERENCE_MODEL=local-model", "TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false")
+                .run(context -> {
+                    assertThat(context.getBean(TeamContextInferenceClient.class))
+                            .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class);
+                    assertThat(context.getBean(TeamContextSettings.class).openRouterProviderGuard()).isFalse();
+                });
+        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            // auto는 호스트가 openrouter.ai이거나 그 하위 도메인일 때만 켠다.
+            "auto, https://openrouter.ai/api/v1, true",
+            "auto, HTTPS://API.OPENROUTER.AI/v1, true",
+            "auto, https://openrouter.ai./api/v1, true",
+            "auto, https://openrouter.ai:443/api/v1, true",
+            "auto, https://openrouter.ai.example.com/v1, false",
+            "auto, https://gateway.example.com/openrouter/v1, false",
+            "AUTO, https://openrouter.ai/api/v1, true",
+            // true·false는 주소와 무관하게 그대로 따른다. 프록시 뒤의 OpenRouter는 true로 지정한다.
+            "true, https://gateway.example.com/openrouter/v1, true",
+            "false, https://openrouter.ai/api/v1, false"
+    })
+    void providerGuardModeIsResolvedFromTheSettingAndTheHost(String mode, String baseUrl, boolean expected) {
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY, "TEAM_CONTEXT_INFERENCE_MODEL=some/model",
+                        "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=" + mode, "TEAM_CONTEXT_INFERENCE_BASE_URL=" + baseUrl)
+                .run(context -> assertThat(context.getBean(TeamContextSettings.class).openRouterProviderGuard())
+                        .isEqualTo(expected));
+    }
+
+    @Test
+    void turningTheGuardOffOnOpenRouterIsReportedAndAnUnknownModeStopsStartup(CapturedOutput output) {
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY, "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=false")
+                .run(context -> assertThat(context.getBean(TeamContextInferenceClient.class))
+                        .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class));
+        assertThat(output.getAll()).contains(NO_GUARD);
+        runner.withPropertyValues("TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=sometimes")
+                .run(context -> assertThat(context).hasFailed());
+    }
+}
