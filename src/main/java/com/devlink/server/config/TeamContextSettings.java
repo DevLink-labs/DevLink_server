@@ -15,14 +15,12 @@ import org.springframework.util.Assert;
 public record TeamContextSettings(boolean enabled, String baseUrl, String apiKey, boolean requireApiKey,
         String model, long timeoutMs, int maxInputChars, int maxItems, int maxOutputTokens, String promptVersion,
         boolean openRouterProviderGuard) {
-    /** application.yml의 기본 모델. OpenRouter 전용 ID라 다른 제공자에 그대로 가면 실패한다. */
-    public static final String DEFAULT_OPENROUTER_MODEL = "upstage/solar-pro4";
+    /** application.yml의 기본 모델. OpenRouter 전용 ID라 다른 주소에 그대로 가면 실패한다. */
+    public static final String DEFAULT_OPENROUTER_MODEL = "openai/gpt-6-luna";
     private static final long LEASE_MARGIN_MS = 30_000;
 
     /**
-     * 설정에서 읽는 생성자다.
-     * 키는 api-key(OPENROUTER_API_KEY)를 쓰고, 비어 있으면 이전 이름의 legacy-api-key(UPSTAGE_API_KEY)를 쓴다.
-     * Compose가 빈 값으로 넘긴 변수도 "없음"으로 다루려고 여기서 고른다.
+     * 설정에서 읽는 생성자다. 키는 api-key(OPENROUTER_API_KEY)에서만 읽는다.
      * 제공자 필터는 auto(기본)면 주소가 OpenRouter일 때만 켜고, true·false면 주소와 무관하게 그 값을 따른다.
      */
     @Autowired
@@ -30,7 +28,6 @@ public record TeamContextSettings(boolean enabled, String baseUrl, String apiKey
             @Value("${devlink.team-context.enabled:true}") boolean enabled,
             @Value("${devlink.team-context.inference.base-url:}") String baseUrl,
             @Value("${devlink.team-context.inference.api-key:}") String apiKey,
-            @Value("${devlink.team-context.inference.legacy-api-key:}") String legacyApiKey,
             @Value("${devlink.team-context.inference.require-api-key:true}") boolean requireApiKey,
             @Value("${devlink.team-context.inference.model:}") String model,
             @Value("${devlink.team-context.inference.timeout-ms:60000}") long timeoutMs,
@@ -39,8 +36,8 @@ public record TeamContextSettings(boolean enabled, String baseUrl, String apiKey
             @Value("${devlink.team-context.inference.max-output-tokens:6000}") int maxOutputTokens,
             @Value("${devlink.team-context.prompt-version:v1}") String promptVersion,
             @Value("${devlink.team-context.inference.openrouter-provider-guard:auto}") String openRouterProviderGuard) {
-        this(enabled, baseUrl, apiKey == null || apiKey.isBlank() ? legacyApiKey : apiKey, requireApiKey, model, timeoutMs,
-                maxInputChars, maxItems, maxOutputTokens, promptVersion, providerGuard(openRouterProviderGuard, baseUrl));
+        this(enabled, baseUrl, apiKey, requireApiKey, model, timeoutMs, maxInputChars, maxItems, maxOutputTokens,
+                promptVersion, providerGuard(openRouterProviderGuard, baseUrl));
     }
 
     public TeamContextSettings {
@@ -90,11 +87,10 @@ public record TeamContextSettings(boolean enabled, String baseUrl, String apiKey
 
     /**
      * 키가 지금 주소의 것이 아닌지. 두 경우다.
-     * 주소가 OpenRouter인데 키가 OpenRouter 키 형식(sk-or-)이 아닌 경우: 기본 주소가 Upstage에서 OpenRouter로 바뀌면서,
-     * 주소를 지정하지 않고 다른 제공자의 키만 둔 배포가 이 상태가 된다.
-     * 주소가 OpenRouter가 아닌데 키가 OpenRouter 키인 경우: 제공자를 바꾸면서 OPENROUTER_API_KEY를 남겨 둔 배포다.
+     * 주소가 OpenRouter인데 키가 OpenRouter 키 형식(sk-or-)이 아닌 경우: 다른 서비스의 키를 OPENROUTER_API_KEY에 둔 배포다.
+     * 주소가 OpenRouter가 아닌데 키가 OpenRouter 키인 경우: 자체 호스팅 주소로 바꾸면서 OPENROUTER_API_KEY를 남겨 둔 배포다.
      * 제공자 필터를 명시적으로 켠 구성은 OpenRouter 앞의 프록시로 보고 허용한다.
-     * 어느 쪽이든 그 키를 다른 업체로 보내지 않는다.
+     * 어느 쪽이든 그 키를 주인이 아닌 곳으로 보내지 않는다.
      */
     public boolean keyBelongsElsewhere() {
         if (apiKey.isEmpty()) {

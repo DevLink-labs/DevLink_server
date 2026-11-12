@@ -25,7 +25,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-/** Upstage·OpenRouter·vLLM이 공유하는 chat/completions 형식과 응답 해석을 검증한다. 실제 네트워크는 쓰지 않는다. */
+/** OpenRouter와 자체 호스팅 서버(vLLM 등)가 공유하는 chat/completions 형식과 응답 해석을 검증한다. 실제 네트워크는 쓰지 않는다. */
 class OpenAiCompatibleTeamContextInferenceClientTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final RestClient.Builder builder = RestClient.builder().baseUrl("https://openrouter.ai/api/v1");
@@ -33,7 +33,7 @@ class OpenAiCompatibleTeamContextInferenceClientTest {
 
     @Test
     void sendsSchemaConstrainedRequestWithBearerKeyAndParsesContent() throws Exception {
-        TeamContextSettings settings = settings("solar-pro4", "test-key", false);
+        TeamContextSettings settings = settings("some-model", "test-key", false);
         var client = new OpenAiCompatibleTeamContextInferenceClient(builder.build(), mapper, settings);
         String content = """
                 {"common":[{"statement":" 세션 쿠키 인증 ","evidence":["7:1","7:1"]}],
@@ -46,7 +46,7 @@ class OpenAiCompatibleTeamContextInferenceClientTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(request -> {
                     JsonNode body = mapper.readTree(request.getBody().toString());
-                    assertThat(body.path("model").asText()).isEqualTo("solar-pro4");
+                    assertThat(body.path("model").asText()).isEqualTo("some-model");
                     assertThat(body.path("messages").size()).isEqualTo(2);
                     assertThat(body.path("messages").get(0).path("role").asText()).isEqualTo("system");
                     JsonNode user = mapper.readTree(body.path("messages").get(1).path("content").asText());
@@ -74,7 +74,7 @@ class OpenAiCompatibleTeamContextInferenceClientTest {
                 .satisfies(item -> assertThat(item.after()).isEqualTo("항상 채움"));
         assertThat(summary.issues()).singleElement()
                 .satisfies(item -> assertThat(item.positions().getFirst().part()).isEqualTo("FRONTEND"));
-        assertThat(client.model()).isEqualTo("solar-pro4");
+        assertThat(client.model()).isEqualTo("some-model");
     }
 
     @Test
@@ -101,7 +101,7 @@ class OpenAiCompatibleTeamContextInferenceClientTest {
             String base = "https://gateway.example.com/openrouter/v1";
             RestClient.Builder other = RestClient.builder().baseUrl(base);
             MockRestServiceServer otherServer = MockRestServiceServer.bindTo(other).build();
-            TeamContextSettings settings = new TeamContextSettings(true, base, "test-key", true, "upstage/solar-pro4", 1000,
+            TeamContextSettings settings = new TeamContextSettings(true, base, "test-key", true, "openai/gpt-6-luna", 1000,
                     6000, 20, 6000, "v1", guard);
             otherServer.expect(requestTo(base + "/chat/completions"))
                     .andExpect(request -> assertThat(mapper.readTree(request.getBody().toString()).has("provider")).isEqualTo(guard))
@@ -114,7 +114,7 @@ class OpenAiCompatibleTeamContextInferenceClientTest {
 
     @Test
     void reportsHttpFailuresEmptyContentAndInvalidJsonAsInferenceExceptions() throws Exception {
-        TeamContextSettings settings = settings("solar-pro4", "test-key", false);
+        TeamContextSettings settings = settings("some-model", "test-key", false);
         var client = new OpenAiCompatibleTeamContextInferenceClient(builder.build(), mapper, settings);
         server.expect(requestTo("https://openrouter.ai/api/v1/chat/completions"))
                 .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
@@ -142,7 +142,7 @@ class OpenAiCompatibleTeamContextInferenceClientTest {
     @Test
     void completeJsonIsAcceptedEvenWhenTheProviderReportsLength() throws Exception {
         var client = new OpenAiCompatibleTeamContextInferenceClient(builder.build(), mapper,
-                settings("upstage/solar-pro4", "test-key", false));
+                settings("openai/gpt-6-luna", "test-key", false));
         server.expect(requestTo("https://openrouter.ai/api/v1/chat/completions"))
                 .andRespond(withSuccess(completion("{\"common\":[],\"changed\":[],\"issues\":[]}", "length"),
                         MediaType.APPLICATION_JSON));

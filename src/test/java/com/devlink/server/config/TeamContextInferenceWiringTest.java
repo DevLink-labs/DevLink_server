@@ -23,10 +23,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(OutputCaptureExtension.class)
 class TeamContextInferenceWiringTest {
     private static final String OPENROUTER_KEY = "sk-or-v1-synthetic-key-never-print";
-    private static final String UPSTAGE_KEY = "up_synthetic-key-never-print";
+    private static final String OTHER_KEY = "other-service-synthetic-key-never-print";
     private static final String KEY_MISMATCH = "does not belong to the configured endpoint";
     private static final String MODEL_MISMATCH = "non-OpenRouter endpoint with the OpenRouter default model";
     private static final String NO_GUARD = "without the provider guard";
+    private static final String NO_KEY = "OPENROUTER_API_KEY is empty";
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             // 개발자 셸의 OPENROUTER_API_KEY 등이 결과를 바꾸지 않게 OS 환경 변수를 뺀다.
@@ -43,11 +44,11 @@ class TeamContextInferenceWiringTest {
             assertThat(context.getBean(TeamContextInferenceClient.class)).isInstanceOf(StructuralTeamContextInferenceClient.class);
             TeamContextSettings settings = context.getBean(TeamContextSettings.class);
             assertThat(settings.baseUrl()).isEqualTo("https://openrouter.ai/api/v1");
-            assertThat(settings.model()).isEqualTo(TeamContextSettings.DEFAULT_OPENROUTER_MODEL).isEqualTo("upstage/solar-pro4");
+            assertThat(settings.model()).isEqualTo(TeamContextSettings.DEFAULT_OPENROUTER_MODEL).isEqualTo("openai/gpt-6-luna");
             assertThat(settings.maxOutputTokens()).isEqualTo(6000);
             assertThat(settings.llmConfigured()).isFalse();
         });
-        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+        assertThat(output.getAll()).contains(NO_KEY).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
     }
 
     @Test
@@ -57,28 +58,30 @@ class TeamContextInferenceWiringTest {
                     .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class);
             TeamContextSettings settings = context.getBean(TeamContextSettings.class);
             assertThat(settings.apiKey()).isEqualTo(OPENROUTER_KEY);
-            assertThat(settings.model()).isEqualTo("upstage/solar-pro4");
+            assertThat(settings.model()).isEqualTo("openai/gpt-6-luna");
             assertThat(settings.openRouterProviderGuard()).isTrue();
             assertThat(settings.toString()).contains("apiKey=<set>").doesNotContain(OPENROUTER_KEY);
         });
-        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD, OPENROUTER_KEY);
+        assertThat(output.getAll()).doesNotContain(NO_KEY, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD, OPENROUTER_KEY);
     }
 
     @Test
-    void theOldKeyNameIsReadWhenTheNewOneIsMissingOrEmpty() {
-        // Compose는 설정하지 않은 변수도 빈 값으로 넘긴다. 빈 값은 "없음"으로 다뤄야 이전 이름이 계속 동작한다.
-        runner.withPropertyValues("OPENROUTER_API_KEY=", "UPSTAGE_API_KEY=" + OPENROUTER_KEY)
-                .run(context -> assertThat(context.getBean(TeamContextSettings.class).apiKey()).isEqualTo(OPENROUTER_KEY));
-        runner.withPropertyValues("UPSTAGE_API_KEY=" + OPENROUTER_KEY)
-                .run(context -> assertThat(context.getBean(TeamContextSettings.class).apiKey()).isEqualTo(OPENROUTER_KEY));
-        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY, "UPSTAGE_API_KEY=" + UPSTAGE_KEY)
-                .run(context -> assertThat(context.getBean(TeamContextSettings.class).apiKey()).isEqualTo(OPENROUTER_KEY));
-    }
-
-    @Test
-    void explicitEndpointSettingsFromAnExistingDeploymentAreKept(CapturedOutput output) {
-        // 예전 템플릿을 따라 OpenRouter와 모델, 필터를 지정한 배포.
+    void theRemovedUpstageKeyNameIsNoLongerRead(CapturedOutput output) {
+        // 이전 템플릿은 OpenRouter 키를 UPSTAGE_API_KEY에 두게 했다. 이름을 옮기지 않은 배포는 키가 없는 상태가 된다.
         runner.withPropertyValues("UPSTAGE_API_KEY=" + OPENROUTER_KEY,
+                        "TEAM_CONTEXT_INFERENCE_BASE_URL=https://openrouter.ai/api/v1",
+                        "TEAM_CONTEXT_INFERENCE_MODEL=openai/gpt-4o-mini", "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true")
+                .run(context -> {
+                    assertThat(context.getBean(TeamContextInferenceClient.class))
+                            .isInstanceOf(StructuralTeamContextInferenceClient.class);
+                    assertThat(context.getBean(TeamContextSettings.class).apiKey()).isEmpty();
+                });
+        assertThat(output.getAll()).contains(NO_KEY).doesNotContain(OPENROUTER_KEY);
+    }
+
+    @Test
+    void explicitModelAndGuardFromAnExistingDeploymentAreKept(CapturedOutput output) {
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY,
                         "TEAM_CONTEXT_INFERENCE_BASE_URL=https://openrouter.ai/api/v1",
                         "TEAM_CONTEXT_INFERENCE_MODEL=openai/gpt-4o-mini", "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true")
                 .run(context -> {
@@ -87,40 +90,30 @@ class TeamContextInferenceWiringTest {
                     assertThat(settings.model()).isEqualTo("openai/gpt-4o-mini");
                     assertThat(settings.openRouterProviderGuard()).isTrue();
                 });
-        // Upstage를 직접 쓰도록 주소와 모델을 지정한 배포. OpenRouter 전용 필터는 자동으로 빠진다.
-        runner.withPropertyValues("UPSTAGE_API_KEY=" + UPSTAGE_KEY,
-                        "TEAM_CONTEXT_INFERENCE_BASE_URL=https://api.upstage.ai/v1", "TEAM_CONTEXT_INFERENCE_MODEL=solar-pro4")
-                .run(context -> {
-                    assertThat(context.getBean(TeamContextInferenceClient.class))
-                            .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class);
-                    TeamContextSettings settings = context.getBean(TeamContextSettings.class);
-                    assertThat(settings.baseUrl()).isEqualTo("https://api.upstage.ai/v1");
-                    assertThat(settings.openRouterProviderGuard()).isFalse();
-                });
-        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+        assertThat(output.getAll()).doesNotContain(NO_KEY, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
     }
 
     @Test
-    void aKeyForAnotherProviderIsNeverSentToTheOpenRouterDefault(CapturedOutput output) {
-        // 주소를 지정하지 않고 Upstage 키만 둔 예전 배포: 기본 주소가 OpenRouter로 바뀌었다.
-        // 그 키를 다른 업체로 보내거나 이벤트를 실패시키지 않고 구조 신호 전용으로 남는다.
-        runner.withPropertyValues("UPSTAGE_API_KEY=" + UPSTAGE_KEY).run(context -> {
+    void aKeyForAnotherServiceIsNeverSentToOpenRouter(CapturedOutput output) {
+        // OpenRouter 키 형식이 아닌 키를 OPENROUTER_API_KEY에 둔 배포(예: 다른 서비스의 키를 옮겨 적은 경우).
+        // 그 키를 OpenRouter로 보내거나 이벤트를 실패시키지 않고 구조 신호 전용으로 남는다.
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OTHER_KEY).run(context -> {
             assertThat(context.getBean(TeamContextInferenceClient.class)).isInstanceOf(StructuralTeamContextInferenceClient.class);
             TeamContextSettings settings = context.getBean(TeamContextSettings.class);
             assertThat(settings.keyBelongsElsewhere()).isTrue();
             assertThat(settings.llmConfigured()).isFalse();
         });
-        assertThat(output.getAll()).contains(KEY_MISMATCH).doesNotContain(UPSTAGE_KEY);
+        assertThat(output.getAll()).contains(KEY_MISMATCH).doesNotContain(NO_KEY, OTHER_KEY);
     }
 
     @Test
-    void anOpenRouterKeyLeftBehindIsNeverSentToAnotherProvider(CapturedOutput output) {
-        // OpenRouter에서 Upstage로 바꾸면서 OPENROUTER_API_KEY를 지우지 않은 배포. 새 이름이 먼저 쓰인다.
-        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY, "UPSTAGE_API_KEY=" + UPSTAGE_KEY,
-                        "TEAM_CONTEXT_INFERENCE_BASE_URL=https://api.upstage.ai/v1", "TEAM_CONTEXT_INFERENCE_MODEL=solar-pro4")
+    void anOpenRouterKeyLeftBehindIsNeverSentToASelfHostedEndpoint(CapturedOutput output) {
+        // 자체 호스팅 주소로 바꾸면서 OPENROUTER_API_KEY를 지우지 않은 배포.
+        runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY,
+                        "TEAM_CONTEXT_INFERENCE_BASE_URL=http://vllm.internal:8000/v1", "TEAM_CONTEXT_INFERENCE_MODEL=local-model")
                 .run(context -> assertThat(context.getBean(TeamContextInferenceClient.class))
                         .isInstanceOf(StructuralTeamContextInferenceClient.class));
-        assertThat(output.getAll()).contains(KEY_MISMATCH).doesNotContain(OPENROUTER_KEY, UPSTAGE_KEY);
+        assertThat(output.getAll()).contains(KEY_MISMATCH).doesNotContain(OPENROUTER_KEY);
         // OpenRouter 앞의 프록시는 필터를 true로 명시한 구성으로 구분한다.
         runner.withPropertyValues("OPENROUTER_API_KEY=" + OPENROUTER_KEY,
                         "TEAM_CONTEXT_INFERENCE_BASE_URL=https://gateway.example.com/openrouter/v1",
@@ -138,10 +131,11 @@ class TeamContextInferenceWiringTest {
     }
 
     @Test
-    void anotherProviderWithoutAModelIsReportedAtStartup(CapturedOutput output) {
-        runner.withPropertyValues("UPSTAGE_API_KEY=" + UPSTAGE_KEY, "TEAM_CONTEXT_INFERENCE_BASE_URL=https://api.upstage.ai/v1")
-                .run(context -> assertThat(context.getBean(TeamContextSettings.class).model()).isEqualTo("upstage/solar-pro4"));
-        assertThat(output.getAll()).contains(MODEL_MISMATCH).doesNotContain(UPSTAGE_KEY);
+    void aSelfHostedEndpointWithoutAModelIsReportedAtStartup(CapturedOutput output) {
+        runner.withPropertyValues("TEAM_CONTEXT_INFERENCE_BASE_URL=http://vllm.internal:8000/v1",
+                        "TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false")
+                .run(context -> assertThat(context.getBean(TeamContextSettings.class).model()).isEqualTo("openai/gpt-6-luna"));
+        assertThat(output.getAll()).contains(MODEL_MISMATCH);
     }
 
     @Test
@@ -153,7 +147,7 @@ class TeamContextInferenceWiringTest {
                             .isInstanceOf(OpenAiCompatibleTeamContextInferenceClient.class);
                     assertThat(context.getBean(TeamContextSettings.class).openRouterProviderGuard()).isFalse();
                 });
-        assertThat(output.getAll()).doesNotContain(KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
+        assertThat(output.getAll()).doesNotContain(NO_KEY, KEY_MISMATCH, MODEL_MISMATCH, NO_GUARD);
     }
 
     @ParameterizedTest

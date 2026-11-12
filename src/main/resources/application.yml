@@ -27,14 +27,12 @@ devlink:
         max-items: 20
         prompt-version: v1
         inference:
-            # OpenAI 호환 chat/completions. 기본은 OpenRouter의 upstage/solar-pro4이며 키가 없으면 구조 신호 전용으로 동작한다.
-            # 다른 제공자나 자체 vLLM으로 바꾸려면 base-url·model을 바꾸고, 키가 없는 서버는 require-api-key를 false로 둔다.
+            # OpenAI 호환 chat/completions. 기본은 OpenRouter의 openai/gpt-6-luna이며 키가 없으면 구조 신호 전용으로 동작한다.
+            # 자체 호스팅 서버(vLLM 등)로 바꾸려면 base-url·model을 바꾸고, 키가 없는 서버는 require-api-key를 false로 둔다.
             base-url: ${TEAM_CONTEXT_INFERENCE_BASE_URL:https://openrouter.ai/api/v1}
             api-key: ${OPENROUTER_API_KEY:}
-            # 이전 이름. api-key가 비어 있을 때만 쓴다. base-url을 지정하지 않으면 이 키도 OpenRouter로 간다.
-            legacy-api-key: ${UPSTAGE_API_KEY:}
             require-api-key: ${TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY:true}
-            model: ${TEAM_CONTEXT_INFERENCE_MODEL:upstage/solar-pro4}
+            model: ${TEAM_CONTEXT_INFERENCE_MODEL:openai/gpt-6-luna}
             timeout-ms: 60000
             # 요약은 배열당 max-items개(세 배열 합 60개)까지 커진다. 가득 찬 요약과 추론 토큰을 담을 만큼 둔다. 과금은 실제 생성 토큰 기준이다.
             max-output-tokens: ${TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS:6000}

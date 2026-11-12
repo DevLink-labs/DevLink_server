@@ -44,8 +44,8 @@ public class OpenAiCompatibleTeamContextInferenceClient implements TeamContextIn
         messages.addObject().put("role", "system").put("content", TeamContextPrompt.SYSTEM);
         messages.addObject().put("role", "user").put("content", TeamContextPrompt.user(mapper, request));
         body.set("response_format", TeamContextPrompt.responseFormat(mapper));
-        // reasoning 설정은 보내지 않는다. 기본 모델인 Upstage Solar는 reasoning_effort가 없으면 추론 없이 답한다.
-        // 기본으로 추론하는 모델(예: openai/gpt-6-luna, 15개 항목 요약에서 약 170토큰)은 그만큼 max_tokens에서 빠진다.
+        // reasoning 설정은 보내지 않는다. 기본 모델(openai/gpt-6-luna)은 기본으로 추론 토큰을 조금 쓰고 그만큼 max_tokens에서
+        // 빠진다(15개 항목 요약에서 약 170토큰). 추론하지 않는 모델에는 영향이 없다.
         // 요약은 배열당 max-items개까지 커질 수 있으므로 max_tokens는 가득 찬 요약과 추론 토큰을 함께 담을 만큼 둔다.
         body.put("max_tokens", settings.maxOutputTokens());
         if (settings.openRouterProviderGuard()) {

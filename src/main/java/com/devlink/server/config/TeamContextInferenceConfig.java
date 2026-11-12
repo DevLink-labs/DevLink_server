@@ -22,20 +22,27 @@ public class TeamContextInferenceConfig {
     public TeamContextInferenceClient teamContextInferenceClient(TeamContextSettings settings,
             RestClient.Builder builder, ObjectMapper mapper) {
         if (settings.keyBelongsElsewhere()) {
-            // 기본 주소가 Upstage에서 OpenRouter로 바뀌었다. 예전 키만 남은 배포나, 제공자를 바꾸면서 OpenRouter 키를 남겨 둔
-            // 배포에서 그 키를 다른 업체로 보내지 않고, 이벤트가 실패로 누락되지 않게 구조 신호 전용으로 동작한다. 값은 남기지 않는다.
+            // 다른 서비스의 키를 OpenRouter로 보내거나, 자체 호스팅 주소로 바꾸면서 남겨 둔 OpenRouter 키를 그 주소로 보내지 않는다.
+            // 이벤트가 실패로 누락되지 않게 구조 신호 전용으로 동작한다. 값은 남기지 않는다.
+            boolean openRouter = settings.openRouter();
             log.warn("Team context inference: the API key does not belong to the configured endpoint ({}); the key is "
-                    + "not sent and summaries stay structural. Put the key for that endpoint in OPENROUTER_API_KEY, or "
-                    + "point TEAM_CONTEXT_INFERENCE_BASE_URL and TEAM_CONTEXT_INFERENCE_MODEL at the provider the key "
-                    + "belongs to", settings.openRouter() ? "OpenRouter, key is not an OpenRouter key"
-                            : "not OpenRouter, key is an OpenRouter key; if this address is a proxy in front of "
-                                    + "OpenRouter set TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true");
+                            + "not sent and summaries stay structural. {}",
+                    openRouter ? "OpenRouter, key is not an OpenRouter key" : "not OpenRouter, key is an OpenRouter key",
+                    openRouter ? "Put an OpenRouter key in OPENROUTER_API_KEY"
+                            : "Remove OPENROUTER_API_KEY for a self-hosted endpoint, or set "
+                                    + "TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true if this address is a proxy in front "
+                                    + "of OpenRouter");
         }
         if (!settings.llmConfigured()) {
+            if (settings.openRouter() && settings.apiKey().isEmpty()) {
+                // 이전 이름 UPSTAGE_API_KEY에 키를 둔 배포가 이름을 옮기지 않으면 이 상태가 된다.
+                log.info("Team context inference: OPENROUTER_API_KEY is empty, so summaries stay structural "
+                        + "(UPSTAGE_API_KEY is no longer read)");
+            }
             return new StructuralTeamContextInferenceClient();
         }
         if (!settings.openRouter() && TeamContextSettings.DEFAULT_OPENROUTER_MODEL.equals(settings.model())) {
-            // 주소만 다른 제공자로 바꾸고 모델을 지정하지 않은 구성. 그 제공자가 모르는 모델 ID라 호출이 실패한다.
+            // 주소만 자체 호스팅 서버로 바꾸고 모델을 지정하지 않은 구성. 그 서버가 모르는 모델 ID라 호출이 실패한다.
             log.warn("Team context inference uses a non-OpenRouter endpoint with the OpenRouter default model {}; "
                     + "set TEAM_CONTEXT_INFERENCE_MODEL to a model that endpoint serves", settings.model());
         }

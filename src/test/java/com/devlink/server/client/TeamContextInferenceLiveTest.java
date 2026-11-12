@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 실제 추론 엔드포인트로 팀·파트 Context 증분 요약을 한 번 돌려 본다. 기본 테스트 실행에서는 건너뛴다.
- * 실행하려면 환경 변수 TEAM_CONTEXT_LIVE=true와 키(OPENROUTER_API_KEY, 없으면 UPSTAGE_API_KEY)를 두고
+ * 실행하려면 환경 변수 TEAM_CONTEXT_LIVE=true와 키(OPENROUTER_API_KEY)를 두고
  * {@code ./gradlew test --tests '*TeamContextInferenceLiveTest' -i}를 실행한다. 주소·모델·제공자 필터는 운영과 같은
  * TEAM_CONTEXT_INFERENCE_BASE_URL, TEAM_CONTEXT_INFERENCE_MODEL, TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD로 바꾼다.
  * 여섯 이벤트를 차례로 넣으므로 유료 호출이 여섯 번 생긴다. 스키마와 근거 좌표는 검사하고, 요약 품질(합의 사항 유지,
@@ -34,11 +34,11 @@ class TeamContextInferenceLiveTest {
     @Test
     @EnabledIfEnvironmentVariable(named = "TEAM_CONTEXT_LIVE", matches = "true")
     void incrementalSummaryKeepsTheSchemaAndOnlyCitesGivenEvents() throws Exception {
-        String apiKey = env("OPENROUTER_API_KEY", env("UPSTAGE_API_KEY", ""));
+        String apiKey = env("OPENROUTER_API_KEY", "");
         assertThat(apiKey).as("OPENROUTER_API_KEY").isNotBlank();
         // 서버가 설정을 읽는 생성자를 그대로 써서 제공자 필터(auto·true·false)와 키·주소 짝 확인이 운영과 같게 한다.
         TeamContextSettings settings = new TeamContextSettings(true,
-                env("TEAM_CONTEXT_INFERENCE_BASE_URL", "https://openrouter.ai/api/v1"), apiKey, "", true,
+                env("TEAM_CONTEXT_INFERENCE_BASE_URL", "https://openrouter.ai/api/v1"), apiKey, true,
                 env("TEAM_CONTEXT_INFERENCE_MODEL", TeamContextSettings.DEFAULT_OPENROUTER_MODEL), 60_000, 6_000, 20,
                 6_000, "v1", env("TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD", "auto"));
         ObjectMapper mapper = new ObjectMapper();
