@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://about.devlink.ai.kr/">
-  <img src="docs/images/devlink-logo.webp" alt="Visit the DevLink introduction page" width="480">
+  <img src="docs/images/devlink-logo.png" alt="Visit the DevLink introduction page" width="480">
 </a>
 
 # DevLink Server
