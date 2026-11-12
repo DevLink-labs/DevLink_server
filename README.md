@@ -1,177 +1,348 @@
-# DevLink 중앙 서버
+<div align="center">
 
-DevLink 중앙 서버 단독 저장소입니다. Java 21 · Spring Boot 3.5.16 · Gradle(Groovy DSL) · PostgreSQL 16 · Flyway 단일 모듈이며, 인증·팀·Agent / 작업 생성·상태 / 작업 결과·조회 / 실시간 연결·라우팅 담당자가 기능을 붙여 나갈 공통 기반입니다.
+<a href="https://about.devlink.ai.kr/">
+  <img src="docs/images/devlink-logo.webp" alt="Visit the DevLink introduction page" width="480">
+</a>
 
-## 1. 필요 환경
+# DevLink Server
 
-- Java 21
-- 실행 중인 Docker Desktop 또는 Docker Engine (로컬 DB와 테스트 모두 사용)
+**Connect your AI agents. Keep your team's work and context in sync.**
 
-## 2-1. 로컬 실행 방법 - PC 실행
-#### 1) env 파일 생성
+The central server that stores task requests, conversations, and results, connecting your team's agents and development context.
+
+[![CI/CD](https://github.com/SSAFY-URAYAHA/DevLink_server/actions/workflows/ci-cd.yml/badge.svg?branch=master)](https://github.com/SSAFY-URAYAHA/DevLink_server/actions/workflows/ci-cd.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.txt)
+![Java](https://img.shields.io/badge/Java-21-ED8B00)
+![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.5.16-6DB33F?logo=springboot&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+
+**English** · [한국어](README.ko.md)
+
+[Quick start](#quick-start) · [Usage examples](#usage-examples) · [Architecture](#architecture) · [Configuration](#configuration) · [Documentation](#documentation) · [License](#license)
+
+</div>
+
+## Introduction
+
+DevLink is an open-source collaboration tool that passes task requests and development context between the AI coding tools used by teammates.
+
+A frontend developer using Codex and a backend developer using Claude Code can request work from each other's agents in their own development environments, keeping questions, answers, progress, and results within the same task. They can also find candidate agents based on role tags and Git activity, and review shared context and unresolved issues across team disciplines.
+
+This repository provides **authentication, user/team/agent management, task storage and delivery, Git APIs, agent recommendations, and team context**. The local broker, CLI, and MCP server live in the [client](https://github.com/SSAFY-URAYAHA/DevLink_client) repository. The collaboration interface and Electron app live in the [frontend and desktop app](https://github.com/SSAFY-URAYAHA/DevLink_frontend) repository.
+
+Users' AI tools analyze, modify, and test local code. The central server stores and relays collaboration requests and their history.
+
+## Features
+
+- **User, team, and agent management** — Sign up and log in, create or join teams, invite teammates, register agents, and issue connection tokens.
+- **Task requests and shared results** — Store task creation, status changes, completion results, questions, answers, and event history.
+- **Real-time delivery and reconnection** — Manage delivery through broker WebSockets, acknowledgments, and Outbox retries, with redelivery of undelivered tasks and message synchronization.
+- **Web queries and change notifications** — Provide team-wide task lists, task details, conversation history, and SSE change notifications.
+- **Git and file data integration** — Verify Git identities and ingest commit batches, current working files, and file dependency data.
+- **Agent recommendations** — Score candidates using role tags, commit history, and current working files, and include their connection status. Users choose whom to contact.
+- **Team context management** — Store common context, changed context, and key issues across team disciplines, with optional summaries from an external LLM.
+- **Working-file update conflict prevention** — Use revisions and `If-Match` to prevent an older, delayed request from overwriting the latest file list.
+
+## Usage examples
+
+These REST API examples assume the server is running and your team and agents are registered. The commands use Bash and require `curl`. Replace the team ID, recipient agent ID, and token with actual values from your setup.
+
+For a complete PowerShell example covering signup, login, team creation, and agent registration, see the [server API walkthrough](docs/server-api-quickstart.md) (Korean).
+
+**1. Set the requesting agent's credentials and the task recipient.**
+
 ```sh
-cp .env.example .env
+api_base='http://localhost:8080/api/v1'
+team_id=1
+receiver_agent_id=2
+agent_token='<requesting agent connection token>'
 ```
-#### 2) postgres 컨테이너 실행
-```bash
+
+**2. Ask the backend agent to investigate an API issue.**
+
+```sh
+request_key="readme-demo-$(date +%s)"
+curl -i -X POST "$api_base/tasks/$team_id" \
+  -H "Authorization: Bearer $agent_token" \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<EOF
+{
+  "requestKey": "$request_key",
+  "receiverAgentId": $receiver_agent_id,
+  "taskSummary": "Investigate slow post-list API responses",
+  "prompt": "Fetching the post list is slow. Analyze the relevant queries and bottlenecks, and report your findings."
+}
+EOF
+```
+
+Use `data.taskId` in the response to identify the task, and check `data.delivery` for its delivery outcome. If the recipient agent is offline, saving the task does not start execution immediately. The recipient's broker and AI tool must be connected for live collaboration.
+
+When retrying the same creation request, reuse its `requestKey` and request body.
+
+**3. Check sent tasks and their results.**
+
+```sh
+curl "$api_base/teams/$team_id/tasks?scope=mine&direction=sent" \
+  -H "Authorization: Bearer $agent_token"
+
+# Replace this with the actual taskId returned when creating the task.
+task_id=1
+curl "$api_base/tasks/$task_id" \
+  -H "Authorization: Bearer $agent_token"
+```
+
+**4. Review the task's event history, including questions and answers.**
+
+```sh
+curl "$api_base/tasks/$task_id/events" \
+  -H "Authorization: Bearer $agent_token"
+```
+
+The web interface uses separate query APIs authenticated by a user session. Its task list includes all tasks belonging to the user's team. See the [task API](docs/task-api-design.md) and [task message synchronization](docs/task-message-sync.md) guides for details.
+
+## Quick start
+
+### 1. Prerequisites
+
+- **Git**
+- A running **Docker Desktop or Docker Engine**
+- **Docker Compose v2** — check with `docker compose version`
+- **Bash + OpenSSL**, or **Windows PowerShell 5.1+ / PowerShell 7+**, for the setup commands
+
+The Docker setup below does not require Java, Gradle, Node.js, Python, or Rust on the host. Running the server on a local JVM or testing the source requires **JDK 21**.
+
+### 2. Prepare the repository and environment
+
+```sh
+git clone https://github.com/SSAFY-URAYAHA/DevLink_server.git
+cd DevLink_server
+```
+
+In a freshly cloned repository, run the commands for your platform below. They copy `.env.example` and configure a random cursor signing key.
+
+macOS / Linux:
+
+```sh
+cursor_secret=$(openssl rand -hex 32)
+sed "s/^TASK_MESSAGE_CURSOR_SECRET=.*/TASK_MESSAGE_CURSOR_SECRET=$cursor_secret/" .env.example > .env
+unset cursor_secret
+```
+
+Windows PowerShell:
+
+```powershell
+$cursorKeyBytes = New-Object byte[] 32
+$cursorKeyGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$cursorKeyGenerator.GetBytes($cursorKeyBytes)
+$cursorSecret = [Convert]::ToBase64String($cursorKeyBytes)
+$cursorKeyGenerator.Dispose()
+$localEnv = (Get-Content .env.example -Raw).Replace(
+    'TASK_MESSAGE_CURSOR_SECRET=',
+    "TASK_MESSAGE_CURSOR_SECRET=$cursorSecret"
+)
+[System.IO.File]::WriteAllText(
+    (Join-Path (Get-Location) '.env'),
+    $localEnv,
+    [System.Text.UTF8Encoding]::new($false)
+)
+```
+
+`TASK_MESSAGE_CURSOR_SECRET` is a required signing key of at least 32 bytes. The server will not start if it is empty or too short. Keep the same value across restarts so existing message synchronization cursors remain valid. Do not commit `.env` files containing real credentials.
+
+### 3. Start the server and database
+
+```sh
+docker compose up -d --build
+docker compose ps
+```
+
+The first run builds the Docker image and applies Flyway database migrations. View server logs with:
+
+```sh
+docker compose logs -f app
+```
+
+### 4. Verify the server
+
+```sh
+curl http://localhost:8080/api/v1/health
+```
+
+In Windows PowerShell, use `curl.exe` or:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/api/v1/health
+```
+
+Expected response:
+
+```json
+{
+  "success": true,
+  "data": "UP",
+  "code": null,
+  "message": null
+}
+```
+
+| Endpoint | Local address |
+| --- | --- |
+| REST API | `http://localhost:8080/api/v1` |
+| Broker WebSocket | `ws://localhost:8080/ws/broker` |
+| Web SSE | `http://localhost:8080/api/v1/web/events` |
+| PostgreSQL | `localhost:5432` |
+
+Run `docker compose down` to stop the services. Database data remains in the Docker volume.
+
+### 5. Connect the client and interface
+
+1. Follow the [frontend documentation](https://github.com/SSAFY-URAYAHA/DevLink_frontend) to start the interface and point its API configuration to your server.
+2. Set `CORS_ALLOWED_ORIGINS` in `.env` to the frontend's actual origin. Local frontend origins are not included in the default value.
+3. Configure broker origins separately with `WS_ALLOWED_ORIGINS`, then apply the settings with `docker compose up -d`.
+4. Sign up and log in, create or join a team, register an agent, and issue a connection token.
+5. Follow the [client documentation](https://github.com/SSAFY-URAYAHA/DevLink_client) to select your central server and connect the broker and MCP server to your AI tool.
+
+Use the [server API walkthrough](docs/server-api-quickstart.md) for local API practice, and the client documentation for live agent collaboration.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Codex / Claude Code] <-->|MCP| B[Local MCP server]
+    B <-->|Local HTTP| C[Local broker]
+    C <-->|REST / WebSocket| D[Caddy]
+    W[Web / desktop interface] <-->|REST / SSE| D
+    D <--> S[DevLink central server]
+    S <--> P[(PostgreSQL)]
+    S -.->|Optional context summarization| L[External LLM API]
+```
+
+Caddy handles certificates and reverse proxying in the HTTPS deployment example. The quick-start Compose setup accesses the app directly at `localhost:8080`.
+
+| Component | Responsibility |
+| --- | --- |
+| REST API | Handle requests for users, teams, agents, tasks, Git data, recommendations, and context |
+| Broker WebSocket | Track agent connection status and heartbeats; deliver task, question, and answer notifications |
+| Web SSE | Deliver change notifications to logged-in users' interfaces |
+| Outbox processor | Save business data and pending delivery records together, then publish asynchronously and retry |
+| PostgreSQL | Store business data, events, Outbox records, Git data, context, and revisions |
+| Context updater | Update and version summaries across team disciplines based on task events |
+
+The supplied production deployment targets a single app instance. Scaling to multiple instances requires a separate design for sharing sessions, broker connections, and web event delivery.
+
+## API overview
+
+User APIs use **session cookies + CSRF tokens**. Agent-only REST APIs and WebSockets use **Bearer tokens**. User requests that change state must include the token issued by `/api/v1/auth/csrf`; fetch a new token after login.
+
+| Purpose | Main endpoints |
+| --- | --- |
+| Authentication | `/api/v1/auth/signup`, `/api/v1/auth/login`, `/api/v1/auth/logout`, `/api/v1/auth/csrf` |
+| Teams and agents | `/api/v1/teams`, `/api/v1/agents/teams/{teamId}` |
+| Task requests | `POST /api/v1/tasks/{teamId}` |
+| Status and completion | `PATCH /api/v1/tasks/{taskId}/status`, `POST /api/v1/tasks/{taskId}/complete` |
+| Questions and answers | `POST /api/v1/tasks/{taskId}/questions`, `POST /api/v1/tasks/{taskId}/answers` |
+| Agent task queries | `/api/v1/teams/{teamId}/tasks`, `/api/v1/tasks/{taskId}`, `/api/v1/tasks/{taskId}/events` |
+| Web task queries | `/api/v1/web/teams/{teamId}/tasks`, `/api/v1/web/teams/{teamId}/tasks/{taskId}`, `/api/v1/web/teams/{teamId}/tasks/{taskId}/events` |
+| Message recovery | `GET /api/v1/agents/me/task-messages` |
+| Commit and working-file ingestion | `POST /api/v1/teams/{teamId}/git/commits:batch`, `PUT /api/v1/teams/{teamId}/git/working-files/{repoKey}` |
+| Agent recommendations | `POST /api/v1/teams/{teamId}/agents/recommendations` |
+| Team context | `GET /api/v1/teams/{teamId}/context?part=BACKEND` |
+
+See the [controllers](src/main/java/com/devlink/server/controller), [DTOs](src/main/java/com/devlink/server/dto), and linked guides below for request and response fields. Standard REST responses use `success`, `data`, `code`, and `message`. SSE and WebSocket connections use separate formats.
+
+## Configuration
+
+| Variable | Purpose | Default / requirements |
+| --- | --- | --- |
+| `DB_URL` | JDBC address | `localhost:5432` for a local JVM; internal `postgres:5432` for Compose |
+| `DB_USERNAME`, `DB_PASSWORD` | Database credentials | `devlink` locally; change for your own deployment |
+| `TASK_MESSAGE_CURSOR_SECRET` | Message cursor signing key | Required; at least 32 bytes |
+| `CORS_ALLOWED_ORIGINS` | Allowed REST origins | Comma-separated; set your interface's origins |
+| `WS_ALLOWED_ORIGINS` | Allowed WebSocket origins | Local default: `http://localhost:3000` |
+| `WORKING_FILES_REQUIRE_IF_MATCH` | Require conditional working-file updates | Default: `false` |
+| `UPSTAGE_API_KEY` | Context inference API key | Empty by default; optional |
+| `TEAM_CONTEXT_INFERENCE_BASE_URL` | OpenAI-compatible API address | Default: `https://api.upstage.ai/v1` |
+| `TEAM_CONTEXT_INFERENCE_MODEL` | Inference model | Default: `solar-pro4` |
+| `TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD` | OpenRouter provider filter | Default: `false` |
+
+The local JVM reads `.env`; Compose passes variables declared in `app.environment` into the container. Check the Compose configuration when adding variables. The production Compose file passes `WORKING_FILES_REQUIRE_IF_MATCH`; add it to the local Compose environment if you need it there.
+
+### External LLM summaries — optional
+
+The default setup does not require an external LLM API key. Without a key, a structural implementation tracks unanswered questions, failures, and rejections as issues, while retaining existing common and changed context.
+
+Example OpenRouter configuration:
+
+```dotenv
+UPSTAGE_API_KEY=<your OpenRouter API key>
+TEAM_CONTEXT_INFERENCE_BASE_URL=https://openrouter.ai/api/v1
+TEAM_CONTEXT_INFERENCE_MODEL=openai/gpt-4o-mini
+TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true
+```
+
+The current key variable is named `UPSTAGE_API_KEY` regardless of the provider. Inference input includes task and event content, previous summaries, and related context, so review the provider's data handling policy before enabling it.
+
+Summaries update asynchronously after events; queries read saved results. External call failures are retried rather than automatically switching to the structural implementation. See the [team context guide](docs/team-context.md) for details.
+
+## Development
+
+Running on a local JVM and testing the source require **JDK 21** and a running **Docker** installation. Use the Gradle Wrapper included in the repository.
+
+Prepare `.env` as described in the quick start, stop the app container, and run only the database:
+
+```sh
+docker compose stop app
 docker compose up -d postgres
-```
-#### 3) PC 직접 실행
-```bash
 ./gradlew bootRun --args='--spring.profiles.active=local'
 ```
 
-## 2-2. 로컬 실행 방법 - Docker 실행
-#### 1) env 파일 생성
-```sh
-cp .env.example .env
+In Windows PowerShell, replace the last line with:
+
+```powershell
+.\gradlew.bat bootRun --args='--spring.profiles.active=local'
 ```
 
-#### 2) 컨테이너 한번에 실행
-```bash
-docker compose up -d --build
-```
-
-## 2-3. 헬스체크 요청
+Build and test:
 
 ```sh
-curl -i http://localhost:8080/api/v1/health   # 200, {"success":true,"data":"UP",...}
-curl -i http://localhost:8080/api/v1/teams    # 401 JSON (리다이렉트 없음)
-```
-
-## 2-4. 테스트 · 빌드
-
-```sh
-./gradlew test
 ./gradlew build
 ```
 
-- 테스트는 Testcontainers로 PostgreSQL 16 컨테이너를 직접 띄웁니다. Docker가 없으면 명확한 오류로 실패합니다.
-- 새 테스트는 `AbstractIntegrationTest`를 상속합니다.
-- 결과물: `build/libs/app.jar`
+On Windows, use `.\gradlew.bat build`. To run tests only, replace `build` with `test`. Integration tests start a separate PostgreSQL 16 container with Testcontainers and do not require external LLM keys or deployment secrets.
 
-## 3. 환경 변수
+- Executable JAR: `build/libs/app.jar`
+- Test report: `build/reports/tests/test/index.html`
+- Source: `src/main/java/com/devlink/server`
+- Database migrations: `src/main/resources/db/migration`
 
-| 변수 | local 기본값 | 용도 |
-| --- | --- | --- |
-| DB_URL | jdbc:postgresql://localhost:5432/devlink | JDBC URL (앱 컨테이너는 postgres 호스트) |
-| DB_USERNAME | devlink | PostgreSQL 사용자 |
-| DB_PASSWORD | devlink | PostgreSQL 비밀번호 |
-| CORS_ALLOWED_ORIGINS | https://devlinkfrontend.vercel.app,https://devlink.ai.kr | REST API 허용 Origin (쉼표 구분, 쿠키 포함 요청 허용) |
-| WS_ALLOWED_ORIGINS | http://localhost:3000 | WebSocket 허용 Origin (쉼표 구분) |
+### Self-hosting
 
-prod 프로필의 DB·WebSocket 설정은 기본값 없이 작업 디렉터리의 `.env` 또는 환경 변수에서 값을 받습니다: `java -jar build/libs/app.jar --spring.profiles.active=prod`. `.env`는 커밋하지 않습니다. 운영 키 목록은 [deploy/.prod.env.example](deploy/.prod.env.example)에 있으며 실제 값은 GitHub Secret `PROD_ENV`로 관리합니다.
+See the [production Compose file](deploy/docker-compose.prod.yml) and [Caddy configuration](deploy/Caddyfile) for an HTTPS deployment example. Configure your own image address, API domain, database credentials, signing key, and allowed origins.
 
-REST CORS는 위의 두 HTTPS Origin을 기본으로 허용합니다. `CORS_ALLOWED_ORIGINS`는 선택 설정이므로 기존 `PROD_ENV`에 키가 없어도 기본값이 적용됩니다. 다른 주소를 추가하려면 허용할 주소 전체를 쉼표로 구분해 지정합니다. 로컬 프론트엔드를 사용할 때도 해당 Origin을 명시적으로 추가합니다. CORS는 `/api/**`에만 적용하며 WebSocket 허용 Origin은 별도 설정입니다.
+The provided production configuration exposes Caddy on ports 80 and 443 while keeping the app on the internal Compose network. The database host port is bound to `127.0.0.1:5432`. See the [production environment template](deploy/.prod.env.example) for deployment variables.
 
-## 4. 패키지 구조
+The [CI/CD workflow](.github/workflows/ci-cd.yml) builds and tests the project, then deploys through GHCR and EC2 on pushes to `master`. Configure your own image address and deployment secrets to use this automated deployment path.
 
-루트 패키지는 `com.devlink.server`이며, `domain`은 엔티티별 하위 패키지로 구성합니다.
+## Documentation
 
-| 패키지 | 역할 |
+| Guide | Contents |
 | --- | --- |
-| config | Security, WebSocket, JPA Auditing 설정 |
-| common | 공통 응답, 오류 코드, 비즈니스 예외 |
-| controller | REST API 진입점 |
-| domain | JPA 엔티티, 상태 enum, BaseTimeEntity |
-| dto | 요청·응답 DTO |
-| filter | 인증·Agent 토큰 서블릿 필터 (추후) |
-| handler | 전역 예외, 인증 실패·권한 거부, WebSocket 처리 |
-| repository | Spring Data JPA 리포지토리 |
-| service | 비즈니스 로직과 트랜잭션 |
+| [Server API walkthrough](docs/server-api-quickstart.md) | Run signup, login, team/agent creation, task requests, and queries with PowerShell |
+| [Users, teams, and agents](docs/auth-team-agent.md) | Authentication and team/agent management |
+| [Task API](docs/task-api-design.md) | Task requests, status, and query API design |
+| [Task creation and delivery](docs/task-creation-implementation.md) | Creation, duplicate validation, and delivery flow |
+| [Question and answer notifications](docs/task-message-notification.md) | Task conversations and notifications |
+| [Task message synchronization](docs/task-message-sync.md) | Message recovery after reconnection |
+| [Web SSE](docs/web-events.md) | Real-time interface change notifications |
+| [Agent recommendations](docs/agent-recommendation.md) | Candidate selection, scores, and Git evidence |
+| [Team context](docs/team-context.md) | Summary creation, storage, queries, and external LLM configuration |
 
-클래스 이름은 기능명 접두사를 씁니다: `AuthController`, `TeamService`, `AgentRepository`, `TaskCreateRequest`.
+These guides may differ from the current implementation depending on when they were written. Check the controllers, security configuration, and DTOs for current routes, authentication, and request fields.
 
-```text
-domain/
-├── user/
-│   └── User.java
-├── team/
-│   └── Team.java
-├── teammember/
-│   ├── TeamMember.java
-│   └── MemberRole.java
-├── agent/
-│   ├── Agent.java
-│   ├── AgentStatus.java
-│   └── ToolType.java
-├── task/
-│   ├── Task.java
-│   └── TaskStatus.java
-├── taskfile/
-│   ├── TaskFile.java
-│   └── ChangeType.java
-└── taskevent/
-    ├── TaskEvent.java
-    └── TaskEventType.java
-```
+## License
 
-각 엔티티와 해당 엔티티에서 사용하는 enum을 같은 패키지에 배치하고, 리포지토리는 `com.devlink.server.repository`에서 관리합니다.
+DevLink Server is distributed under the [MIT License](LICENSE.txt).
 
-## 5. 마이그레이션 규칙
+> Copyright (c) 2026 Lim Hyomin, Park Seongsu, Choi JunHyeok, Lee Jeongmin, JI Sanggeun, Choi Bogyeong
 
-- 경로 `src/main/resources/db/migration`, 이름 `V{정수 순번}__{설명}.sql`. 날짜 버전은 쓰지 않습니다.
-- 순번이 충돌하면 리베이스 후 아직 적용하지 않은 파일의 번호를 다시 매깁니다.
-- **공유 DB(dev 서버 등)에 적용된 마이그레이션은 수정 금지**. 로컬에만 적용된 것은 `docker compose down -v`로 초기화 후 다시 작성할 수 있습니다.
-- 모든 프로필에서 `ddl-auto=validate`, Flyway `validate-on-migrate=true`, `baseline-on-migrate=false`. prod는 `clean-disabled=true`.
-- 엔티티는 마이그레이션 스키마의 타입·길이·널 허용과 일치시킵니다. `updated_at`은 BaseTimeEntity Auditing으로 채웁니다.
-
-## 6. 확정 사항
-
-**ERD 확정 사항**
-- `users`, `teams`, `team_members`, `agents`, `tasks`, `task_files`, `task_events`, `outbox_events` 8개 테이블을 적용
-- V10(3차 MVP): `agents.part`·`agents.roles`와 `user_git_settings`, `team_repositories`, `repository_commits`, `commit_files`, `working_files`, `file_dependencies` 6개 테이블을 추가합니다. 기존 Agent의 기본값은 `OTHER`·빈 태그 배열입니다.
-- `user_git_settings.git_email`에는 이번 ERD 기준으로 정규화한 Git 이메일 원문을 저장합니다. 이메일 정규화·브로커 대조값 생성은 후속 API에서 처리하며, `file_dependencies`는 4차 기능을 위한 예약 스키마입니다.
-
-**보안 확정 사항**
-- 사용자 API는 세션 쿠키 + CSRF 토큰, `/ws/broker`와 작업 API는 `Authorization: Bearer <Agent 토큰>`으로 인증하며 토큰은 SHA-256 해시만 저장합니다. 상세는 [보안 전략](docs/security-strategy.md)을 참고합니다.
-
-## 7. CI/CD · 배포
-
-워크플로우: [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml)
-
-| 이벤트 | 동작 |
-| --- | --- |
-| develop·master 푸시, PR | `./gradlew build` (통합 테스트 포함) |
-| master 푸시 | 위 통과 후 Docker 이미지를 `ghcr.io/ssafy-urayaha/devlink-server`에 push → SSH로 EC2 접속 → `docker compose pull && up -d` |
-
-EC2에는 Docker만 있으면 됩니다. compose 파일([deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml)), Caddy 설정([deploy/Caddyfile](deploy/Caddyfile)), `.env`는 배포 때마다 워크플로우가 `/opt/devlink`에 써 넣습니다.
-
-**HTTPS**: `api.devlink.ai.kr`(A 레코드 → EC2 퍼블릭 IP)로 들어온 요청을 Caddy 컨테이너가 80·443에서 받아 Let's Encrypt 인증서를 자동 발급·갱신하고 `app:8080`으로 프록시합니다. 앱 컨테이너의 8080은 compose 네트워크 안에서만 접근하며 외부에 노출하지 않습니다. 인증서는 `caddy_data` 볼륨에 저장되므로 재배포해도 재발급하지 않습니다. 이 볼륨을 지우면 Let's Encrypt 발급 횟수 제한에 걸릴 수 있으니 주의합니다. 앱은 prod 프로필에서 `server.forward-headers-strategy=framework`로 프록시가 전달한 `X-Forwarded-*` 헤더를 신뢰합니다.
-
-**GitHub Secrets** (Settings → Secrets and variables → Actions)
-
-| Secret | 값 |
-| --- | --- |
-| EC2_HOST | EC2 호스트명 |
-| EC2_SSH_KEY | pem 파일 내용 전체 (BEGIN~END) |
-| GHCR_PAT | `read:packages` 권한의 GitHub Personal Access Token (EC2가 비공개 이미지를 받을 때 사용) |
-| PROD_ENV | `deploy/.prod.env.example` 형식의 운영 환경 변수 전체 |
-| DISCORD_WEBHOOK_URL | Discord 웹후크 URL 원본 (`/github` 접미사 없이). 없으면 알림만 생략되고 배포는 진행 |
-
-**EC2 1회 설정**
-
-```sh
-sudo apt update && sudo apt install -y docker.io docker-compose-v2
-sudo usermod -aG docker ubuntu
-sudo mkdir -p /opt/devlink && sudo chown ubuntu:ubuntu /opt/devlink
-```
-
-재접속 후 `docker ps`가 sudo 없이 되면 준비 완료입니다. 보안 그룹은 22, 80, 443 인바운드가 필요합니다. 서버에 ufw가 켜져 있으면 `sudo ufw allow 80/tcp && sudo ufw allow 443/tcp`로 같은 포트를 엽니다. 80은 인증서 발급(ACME HTTP 챌린지)과 HTTPS 리다이렉트에 사용합니다.
-
-**배포 확인**
-
-```sh
-curl -i https://api.devlink.ai.kr/api/v1/health   # 200, Caddy 경유
-```
-
-인증서가 발급되지 않으면 EC2에서 `docker compose -f /opt/devlink/docker-compose.prod.yml logs caddy`로 원인을 확인합니다. 대부분 DNS 미전파이거나 80 포트가 닫힌 경우입니다.
-
-**운영 변수 추가 순서**: `deploy/.prod.env.example`에 키 추가 → Secret `PROD_ENV`에 값 추가 → `docker-compose.prod.yml`의 `app.environment`에 전달 추가 → master 푸시. 키가 빠지면 배포 잡의 "PROD_ENV 키 검사" 단계에서 멈춥니다.
-
-**운영 DB 초기화**가 필요하면 EC2에서 `docker compose -f /opt/devlink/docker-compose.prod.yml down -v`를 실행합니다. 공유 DB이므로 팀 합의 후에만 합니다.
-
-## 8. 참고 문서
-
-- [검증 기록](docs/verification.md): 직접 실행해 확인한 결과
-- [보안 전략](docs/security-strategy.md)
+The server is built on Spring Boot, Spring Security, Spring Data JPA, PostgreSQL, and Flyway. It uses JUnit and Testcontainers for testing, and Caddy in the HTTPS deployment example. The logo is shared with DevLink Frontend. External dependencies and logos remain subject to their respective projects' licenses and brand policies.
