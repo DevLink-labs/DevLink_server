@@ -6,15 +6,21 @@ services:
     vllm:
         # 운영에서는 확인한 버전으로 고정한다(예: VLLM_IMAGE_TAG=v<버전>).
         image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-latest}
-        command:
-            - --model
-            - ${VLLM_MODEL:?VLLM_MODEL에 Hugging Face 모델 ID를 지정한다}
-            # 요청의 입력 토큰과 max_tokens(기본 6000)의 합이 이 길이를 넘으면 vLLM이 요청을 거절한다.
-            - --max-model-len
-            - "${VLLM_MAX_MODEL_LEN:-32768}"
+        # 한 줄 문자열로 쓴다. VLLM_EXTRA_ARGS가 여러 인자로 나뉘어야 해서 목록 형식을 쓸 수 없다.
+        # 입력이나 max_tokens(기본 6000)가 --max-model-len을 넘는 요청은 vLLM이 400으로 거절한다. 둘을 합쳐 넘으면 거절하지 않고
+        # 남은 길이만큼만 출력하고, 요약이 잘리면 서버가 cut off at max_tokens 오류를 남긴다(vLLM 0.32.0에서 확인).
+        # docs/team-context.md의 "문맥 길이와 출력 한도" 참조.
+        # VLLM_EXTRA_ARGS는 모델별 추가 인자다. 예: Qwen3의 생각 출력을 끄는
+        #   --default-chat-template-kwargs '{"enable_thinking":false}'
+        command: >-
+            --model ${VLLM_MODEL:?VLLM_MODEL에 Hugging Face 모델 ID를 지정한다}
+            --max-model-len ${VLLM_MAX_MODEL_LEN:-32768}
+            ${VLLM_EXTRA_ARGS:-}
         environment:
             # 접근 승인이 필요한 모델을 받을 때만 지정한다.
             HF_TOKEN: ${HF_TOKEN:-}
+            # 값 없이 적어 호스트에 지정된 경우에만 넘긴다. 이미지의 CUDA보다 오래된 NVIDIA 드라이버(R535·R570)에서 1로 지정한다.
+            VLLM_ENABLE_CUDA_COMPATIBILITY:
         volumes:
             - vllm_hf_cache:/root/.cache/huggingface
         # vLLM은 공유 메모리를 쓴다. 공식 실행 예시와 같이 호스트 IPC를 쓴다.

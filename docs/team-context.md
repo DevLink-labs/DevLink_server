@@ -24,7 +24,7 @@
 
 프롬프트는 `TeamContextPrompt.SYSTEM`에 있고 `devlink.team-context.prompt-version`을 행마다 저장한다. 프롬프트를 바꾸면 버전도 올려 전후 비교가 가능하게 한다. 요청에 reasoning 설정은 넣지 않는다. 기본 모델(`openai/gpt-6-luna`)은 기본으로 추론 토큰을 조금 쓰고 그만큼 `max_tokens`에서 빠진다(15개 항목 요약에서 약 170토큰).
 
-`max-output-tokens`(기본 6000)는 가득 찬 요약을 담을 만큼 둔다. 요약은 배열당 `max-items`개, 세 배열 합쳐 60개까지 커지고, 실제 호출에서 잰 출력 토큰 수로 어림하면 60개에 약 2,800토큰과 추론 토큰이 든다. 출력이 한도에서 잘려(`finish_reason=length`) 내용이 없거나 JSON이 끊기면 클라이언트가 원인을 적은 예외를 던진다. 이 이벤트는 다른 추론 실패처럼 `devlink.outbox.max-attempts`회까지 다시 시도한 뒤 영구 실패로 남아 요약에 반영되지 않는다. 재시도마다 호출 비용이 들고, 같은 쌍의 다음 이벤트도 같은 큰 요약을 들고 가므로 같은 이유로 실패하기 쉽다. 로그에 `cut off at max_tokens`가 보이면 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`로 한도를 올린다.
+`max-output-tokens`(기본 6000)는 가득 찬 요약을 담을 만큼 둔다. 요약은 배열당 `max-items`개, 세 배열 합쳐 60개까지 커지고, 실제 호출에서 잰 출력 토큰 수로 어림하면 60개에 약 2,800토큰과 추론 토큰이 든다. 출력이 한도에서 잘려(`finish_reason=length`) 내용이 없거나 JSON이 끊기면 클라이언트가 원인을 적은 예외를 던진다. 이 이벤트는 다른 추론 실패처럼 `devlink.outbox.max-attempts`회까지 다시 시도한 뒤 영구 실패로 남아 요약에 반영되지 않는다. 재시도마다 호출 비용이 들고, 같은 쌍의 다음 이벤트도 같은 큰 요약을 들고 가므로 같은 이유로 실패하기 쉽다. 로그에 `cut off at max_tokens`가 보이면 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`로 한도를 올린다. 자체 호스팅이면 먼저 문맥 길이를 확인한다(아래 "자체 호스팅 (vLLM)"의 "문맥 길이와 출력 한도").
 
 ## 기본 모델 선택 (2026-11-12)
 
@@ -119,21 +119,25 @@ VLLM_MODEL=<Hugging Face 모델 ID> docker compose -f docker-compose.yml -f dock
 | `VLLM_IMAGE_TAG` | latest | `vllm/vllm-openai` 이미지 태그. 운영에서는 확인한 버전으로 고정한다 |
 | `HF_TOKEN` | 없음 | 접근 승인이 필요한 모델을 받을 때만 |
 | `VLLM_START_PERIOD` | 10m | 헬스체크 시작 유예. 모델 내려받기가 오래 걸리면 늘린다 |
+| `VLLM_EXTRA_ARGS` | 없음 | `vllm serve`에 덧붙일 모델별 인자. 예: Qwen3의 생각 출력을 끄는 `--default-chat-template-kwargs '{"enable_thinking":false}'` |
+| `VLLM_ENABLE_CUDA_COMPATIBILITY` | 없음 | 이미지의 CUDA보다 오래된 NVIDIA 드라이버에서 `1`. 지정한 경우에만 컨테이너에 넘긴다. 아래 "조건" 참조 |
 | `TEAM_CONTEXT_INFERENCE_TIMEOUT_MS` | 120000(이 구성), 60000(기본 구성) | 요약 한 번의 제한 시간 |
 
 조건:
 
 - Linux, NVIDIA GPU, NVIDIA Container Toolkit. GPU 메모리는 고른 모델과 `VLLM_MAX_MODEL_LEN`에 따라 달라진다.
-- 모델은 채팅 템플릿이 있는 텍스트 생성 모델이어야 하고, 한국어 요약과 JSON 스키마에 맞춘 출력을 할 수 있어야 한다. 기본 모델은 정하지 않았다. 고른 모델은 아래 확인 방법으로 여러 번 돌려 본다.
-- 서버가 보내는 요청은 `POST /v1/chat/completions`이고 `response_format: json_schema`(strict)와 `max_tokens`를 담는다. `Authorization` 헤더와 OpenRouter 전용 `provider` 필드는 보내지 않는다.
+- NVIDIA 드라이버 버전. [vLLM 문서](https://docs.vllm.ai/en/latest/deployment/docker.html)에 따르면 CUDA 13 이미지는 R580 이상 드라이버가 필요하고, R535·R570 드라이버에서는 `VLLM_ENABLE_CUDA_COMPATIBILITY=1`로 호환 모드를 켠다(일부 데이터센터·전문가용 GPU만 지원). 이 값은 Docker로 실행해 보지 못했다. Docker 없이 pip로 설치한 R570 장비에서는 기본 빌드(0.33.0, CUDA 13)가 GPU를 인식하지 못해 CUDA 12.9 빌드(0.32.0)를 썼다.
+- 모델은 채팅 템플릿이 있는 텍스트 생성 모델이어야 하고, 한국어 요약과 JSON 스키마에 맞춘 출력을 할 수 있어야 한다. 기본 모델은 정하지 않았다. 아래 "실제 vLLM에서 확인한 것"의 모델별 결과를 참고하고, 고른 모델은 확인 방법으로 여러 번 돌려 본다.
+- 서버가 보내는 요청은 `POST /v1/chat/completions`이고 `response_format: json_schema`(strict)와 `max_tokens`를 담는다. `Authorization` 헤더와 OpenRouter 전용 `provider` 필드는 보내지 않는다. 요청은 HTTP/1.1로 보낸다. JDK 클라이언트의 기본값대로 h2c 업그레이드 헤더를 붙이면 vLLM이 본문을 읽지 못해 400으로 거절한다([DevLink_server#103](https://github.com/SSAFY-URAYAHA/DevLink_server/issues/103)).
 - vLLM 포트는 호스트에 열지 않는다. 키 없이 받으므로 compose 네트워크 안의 `app`만 접근한다. 다른 장비의 vLLM을 쓰려면 이 파일 대신 `TEAM_CONTEXT_INFERENCE_BASE_URL`·`TEAM_CONTEXT_INFERENCE_MODEL`·`TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false`를 직접 지정하고, 그 구간의 접근 제한은 운영자가 맡는다.
 
 문맥 길이와 출력 한도:
 
-- 한 요청의 입력 토큰과 `max_tokens`의 합이 `--max-model-len`을 넘으면 안 된다. `max_tokens`는 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`(기본 6000)다.
+- 입력이 `--max-model-len`을 넘는 요청은 vLLM이 HTTP 400(`maximum context length is 32768 tokens`)으로 거절한다. `max_tokens`만으로 `--max-model-len`을 넘어도 400이다. 거절된 이벤트는 다른 추론 실패처럼 재시도 뒤 요약에서 빠진다.
+- 입력은 맞지만 `max_tokens`와 합쳐 넘는 요청은 거절하지 않는다. vLLM 0.32.0은 남은 길이만큼만 출력하고 `finish_reason: length`로 끝낸다(입력 29,734토큰에 출력 3,034토큰, 합 32,768). 요약이 그 안에 끝나면 정상 처리된다. 잘리면 서버는 `cut off at max_tokens` 오류를 남긴다. 이때 오류 문구는 출력 한도를 올리라고 안내하지만 원인은 문맥 길이다. `max_tokens`는 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`(기본 6000)다.
 - 입력은 시스템 프롬프트, 이전 요약, 새 이벤트 본문, 구조 신호다. 코드가 정한 상한은 다음과 같다. 이벤트 본문은 `max-input-chars`(6000자)까지인데, 완료된 작업의 상태 변경은 내용과 결과를 이어 붙여 약 12,000자까지 간다. 이전 요약은 세 배열 합쳐 60개 항목까지이고 항목의 각 문장도 6000자까지 허용되므로, 실제 크기는 이전 출력(`max_tokens` 이하)이 정한다. 구조 신호의 미답변 질문은 질문당 300자이고 개수 제한이 없다.
-- 한국어는 토크나이저에 따라 글자당 1~2토큰이 들 수 있다. 이 가정으로 어림하면 12,000자 이벤트가 1만 2천~2만 4천 토큰이고, 이전 요약이 최대 약 6천 토큰이라 입력이 1만 8천~3만 토큰이 된다(재지 않았다). 여기에 출력 6000을 더하면 높은 쪽에서는 32768을 넘는다. 그런 요청은 거절되고 그 이벤트는 요약에서 빠진다. 보통 크기의 이벤트에는 32768이 맞지만 여유 있는 값은 아니며, 문맥이 8k·16k인 모델은 기본 `max_tokens`로는 맞지 않는다.
-- 문맥이 더 짧은 모델을 쓰면 `VLLM_MAX_MODEL_LEN`을 그 길이로 낮추고 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`도 함께 낮춘다. 출력 한도가 요약보다 작으면 `cut off at max_tokens` 오류가 난다(위 "추론 구현" 참조). 입력이 문맥을 넘는 요청은 vLLM이 거절하고, 그 이벤트는 다른 추론 실패처럼 재시도 뒤 요약에서 빠진다.
+- 토큰 수는 한 건만 쟀다. Qwen3 토크나이저에서 같은 한국어 문장을 반복한 26,400자가 21,634토큰(글자당 약 0.8토큰)이었다. 이 비율이면 12,000자 이벤트가 약 1만 토큰이고, 이전 요약 최대 약 6천 토큰과 출력 6000을 더해도 32768 안에 든다(시스템 프롬프트와 구조 신호는 뺀 계산이다). 토크나이저와 글에 따라 달라지고 다른 모델은 재지 않았으므로, 모델이 허용하면 32768보다 짧게 잡지 않는다. 문맥이 8k·16k인 모델은 기본 `max_tokens`로는 맞지 않는다.
+- 문맥이 더 짧은 모델을 쓰면 `VLLM_MAX_MODEL_LEN`을 그 길이로 낮추고 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`도 함께 낮춘다. 출력 한도가 요약보다 작으면 `cut off at max_tokens` 오류가 난다(위 "추론 구현" 참조).
 
 시작 순서와 장애:
 
@@ -151,12 +155,35 @@ TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false OPENROUTER_API_KEY= ./gradlew test 
 
 여섯 이벤트를 차례로 넣어 스키마와 근거 좌표를 검사하고, 합의 사항 유지와 미해결 쟁점 포착 여부, 호출 지연을 출력한다. 셸에 OpenRouter 키가 남아 있으면 서버 규칙대로 그 키를 다른 주소로 보내지 않아 테스트가 실패하므로 명령에서 비운다.
 
+실제 vLLM에서 확인한 것(2026-11-12):
+
+환경은 vLLM 0.32.0(CUDA 12.9 빌드, pip 설치), NVIDIA H200 한 장을 다른 작업과 나눠 쓰는 공용 장비, `--max-model-len 32768`이다. 이 장비에는 Docker가 없어 `vllm serve`를 직접 띄웠다.
+
+- `response_format: json_schema`의 `strict: true`를 받고, 출력이 스키마를 따른다.
+- OpenRouter 전용 `provider` 필드를 보내도 무시하고 처리한다. 이 구성에서 서버는 그 필드를 보내지 않는다.
+- `/health`는 vLLM에 API 키를 걸어도 키 없이 200을 준다. 키가 걸려 있으면 `/v1/models`는 키 없는 요청에 401을 준다.
+- 문맥 초과 요청의 동작은 위 "문맥 길이와 출력 한도"에 적은 대로다.
+- 수정 전 클라이언트의 요청은 400으로 거절됐고([DevLink_server#103](https://github.com/SSAFY-URAYAHA/DevLink_server/issues/103)), HTTP/1.1로 고정한 뒤 통과했다.
+- 확인 테스트의 시작 로그는 `Team context inference uses 127.0.0.1 with model Qwen/Qwen3-14B (timeout 60000 ms)`였다. Compose 구성에서는 호스트가 `vllm`, 제한 시간이 120000으로 나온다(실행해 보지 않았다).
+- 키 없는 구성(vLLM에 API 키를 걸지 않고 `TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false`, `OPENROUTER_API_KEY` 비움)으로 여섯 이벤트 테스트를 한 번 돌려 통과했다(Qwen3-14B, 요청 6회, 4xx 응답 없음). 아래 모델별 측정은 공용 장비라 vLLM에 API 키를 걸고, 그 키를 `OPENROUTER_API_KEY`에 넣어 돌렸다.
+
+모델별 결과는 위 "확인 방법"의 여섯 이벤트 테스트를 모델마다 8번 돌린 것이다. 지연은 테스트 한 번 안의 호출 지연 중앙값의 범위이고, GPU를 다른 작업과 나눠 쓰는 상태에서 쟀다. 테스트는 근거 좌표 검사에서 실패하면 그 뒤를 출력하지 않으므로, 합의 유지와 쟁점 포착은 통과한 실행만 센 것이다. 횟수가 적어 비율은 참고값이다. OpenRouter 모델의 같은 측정은 위 "기본 모델 선택"에 있다.
+
+| 모델 | 추가 인자 | 스키마·근거 통과 | 합의 유지 | 미해결 쟁점 포착 | 호출 지연 중앙값 |
+| --- | --- | --- | --- | --- | --- |
+| `kakaocorp/kanana-1.5-8b-instruct-2505` | 없음 | 7/8 | 7/7 | 5/7 | 0.6~1.2초 |
+| `Qwen/Qwen3-14B` | `--default-chat-template-kwargs '{"enable_thinking":false}'` | 8/8 | 8/8 | 8/8 | 3.8~4.7초 |
+| `K-intelligence/Midm-2.0-Base-Instruct` | 없음 | 7/8 | 6/7 | 7/7 | 1.6~2.3초 |
+
+kanana와 Midm의 실패 한 번씩은 둘 다 입력에 없는 근거 좌표(`9:4`)를 만든 경우다. 근거 좌표가 입력에 있는지는 이 테스트만 검사한다. 서버는 검사하지 않으므로 운영에서는 그런 좌표가 요약에 그대로 남는다.
+
 확인하지 못한 것(2026-11-12):
 
-- 실제 vLLM 서버로는 실행하지 않았다. 이 구성 파일은 Compose 문법 검사와, 같은 요청을 받는 가짜 서버로만 확인했다.
-- vLLM이 `json_schema`의 `strict` 키를 받는지, 문맥 길이를 넘는 요청에 어떤 응답을 주는지, 헬스체크 명령이 이미지 안에서 동작하는지는 실제 실행으로 확인해야 한다.
+- Docker Compose 구성 자체. `docker compose config`로 문법과 인자가 나뉘는 방식만 확인했다. 이미지 안에서 헬스체크 명령이 동작하는지, GPU 예약, `VLLM_ENABLE_CUDA_COMPATIBILITY`는 실행해 보지 못했다.
 - "시작 순서와 장애"에 적은 Compose 동작(`vllm`이 준비되지 못하면 `up`이 실패하고 `app`이 시작되지 않는다)은 Compose의 일반 동작에서 따온 것이고 이 구성으로 실행해 본 것이 아니다.
-- 어떤 모델이 이 요약에 맞는지는 재지 않았다.
+- vLLM 0.32.0 외의 버전. 문맥 초과 요청의 처리는 버전에 따라 다를 수 있다.
+- 호출 사이가 긴 운영 조건. vLLM이 닫은 유휴 연결을 클라이언트가 다시 쓰려다 실패하는 경우가 있는지 보지 못했다. 실패한 이벤트는 outbox 재시도가 다시 보낸다.
+- 표의 모델을 실제 팀 대화로 돌린 품질.
 
 ## 검증
 
@@ -166,6 +193,7 @@ TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false OPENROUTER_API_KEY= ./gradlew test 
 | 구조 전용 추론 | `StructuralTeamContextInferenceClientTest` |
 | OpenAI 호환 요청·응답·오류, 제공자 필터의 적용 범위 | `OpenAiCompatibleTeamContextInferenceClientTest` (MockRestServiceServer) |
 | 설정 기본값과 환경 변수 연결(키 이름, 읽지 않는 이전 키 이름, 주소를 지정한 구성, 키 불일치 경고, vLLM 구성이 넘기는 값) | `TeamContextInferenceWiringTest` |
+| 평문 HTTP 주소로 보내는 요청이 HTTP/1.1이고 업그레이드 헤더가 없음 | `TeamContextInferenceTransportTest` (JDK 내장 HTTP 서버) |
 | 실제 엔드포인트에서의 증분 요약(선택 실행) | `TeamContextInferenceLiveTest` |
 | 요약 정규화·JSON 왕복 | `TeamContextSummaryTest` |
 | Outbox → 갱신 → 조회 전체, 중복 반영 방지, 잘못된 메시지 영구 실패, 인증·검증 오류 | `TeamContextIntegrationTest` (Testcontainers) |
