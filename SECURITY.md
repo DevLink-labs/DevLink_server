@@ -2,7 +2,7 @@
 
 **English** · [한국어](SECURITY.ko.md)
 
-[Project overview](README.md) · [Community code of conduct](CODE_OF_CONDUCT.md) · [Contributing guide](CONTRIBUTING.md)
+[Project overview](README.md) · [Contributing guide](CONTRIBUTING.md)
 
 ## Reporting a vulnerability
 
