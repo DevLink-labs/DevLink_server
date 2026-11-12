@@ -59,10 +59,13 @@ See the [controllers](../src/main/java/com/devlink/server/controller), [DTOs](..
 | `CORS_ALLOWED_ORIGINS` | Allowed REST origins | Comma-separated; set your interface's origins |
 | `WS_ALLOWED_ORIGINS` | Allowed WebSocket origins | Local default: `http://localhost:3000` |
 | `WORKING_FILES_REQUIRE_IF_MATCH` | Require conditional working-file updates | Default: `false` |
-| `UPSTAGE_API_KEY` | Context inference API key | Empty by default; optional |
-| `TEAM_CONTEXT_INFERENCE_BASE_URL` | OpenAI-compatible API address | Default: `https://api.upstage.ai/v1` |
-| `TEAM_CONTEXT_INFERENCE_MODEL` | Inference model | Default: `solar-pro4` |
-| `TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD` | OpenRouter provider filter | Default: `false` |
+| `OPENROUTER_API_KEY` | OpenRouter API key for context inference | Empty by default; optional |
+| `TEAM_CONTEXT_INFERENCE_BASE_URL` | OpenAI-compatible API address | Default: `https://openrouter.ai/api/v1` |
+| `TEAM_CONTEXT_INFERENCE_MODEL` | Inference model | Default: `openai/gpt-6-luna` |
+| `TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD` | OpenRouter provider filter | Default: `auto` (applied only when the address is `openrouter.ai`); can be fixed to `true` or `false` |
+| `TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY` | Whether an inference API key is required | Default: `true`; set `false` for a keyless self-hosted server |
+| `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS` | Output token limit for a summary | Default: `6000` |
+| `TEAM_CONTEXT_INFERENCE_TIMEOUT_MS` | Time limit for one summary call | Default: `60000` |
 
 The local JVM reads `.env`; Compose passes variables declared in `app.environment` into the container. Check the Compose configuration when adding variables. The production Compose file passes `WORKING_FILES_REQUIRE_IF_MATCH`; add it to the local Compose environment if you need it there.
 
@@ -70,18 +73,26 @@ The local JVM reads `.env`; Compose passes variables declared in `app.environmen
 
 The default setup does not require an external LLM API key. Without a key, a structural implementation tracks unanswered questions, failures, and rejections as issues, while retaining existing common and changed context.
 
-Example OpenRouter configuration:
+The default target is `openai/gpt-6-luna` on OpenRouter. One line with an OpenRouter key turns it on.
 
 ```dotenv
-UPSTAGE_API_KEY=<your OpenRouter API key>
-TEAM_CONTEXT_INFERENCE_BASE_URL=https://openrouter.ai/api/v1
-TEAM_CONTEXT_INFERENCE_MODEL=openai/gpt-4o-mini
-TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true
+OPENROUTER_API_KEY=<your OpenRouter API key>
 ```
 
-The current key variable is named `UPSTAGE_API_KEY` regardless of the provider. Inference input includes task and event content, previous summaries, and related context, so review the provider's data handling policy before enabling it.
+Add one more line only to use a different model.
 
-Summaries update asynchronously after events; queries read saved results. External call failures are retried rather than automatically switching to the structural implementation. See the [team context guide](../docs/team-context.md) for details.
+```dotenv
+TEAM_CONTEXT_INFERENCE_MODEL=openai/gpt-4o-mini
+```
+
+- The key variable is `OPENROUTER_API_KEY`. The earlier name `UPSTAGE_API_KEY` is no longer read. A setup that keeps the key under that name runs with structural summaries and no error, so move the key to the new name.
+- Check the server startup log to see whether it is on. When it is, the log has a `Team context inference uses openrouter.ai with model …` line; when the key is empty, it has `OPENROUTER_API_KEY is empty, so summaries stay structural`.
+- Only an OpenRouter key (starting with `sk-or-`) is sent to the OpenRouter address. With another service's key, the server does not send the key, runs with structural summaries, and logs a warning at startup. Conversely, remove `OPENROUTER_API_KEY` when you point the address at a self-hosted server; if it stays, the server falls back to structural summaries for the same reason.
+- The default model sometimes left a task with unresolved disagreement out of the summary. The model comparison is under "기본 모델 선택" in the [team context guide](team-context.md) (Korean).
+- To summarize with your own vLLM server instead of an external API, layer `docker-compose.vllm.yml` on top of the default Compose file. Requirements and per-model results are under "자체 호스팅 (vLLM)" in the [team context guide](team-context.md) (Korean).
+- Inference input includes task and event content, previous summaries, and related context, so review the provider's data handling policy before enabling it.
+
+Summaries update asynchronously after events; queries read saved results. External call failures are retried rather than automatically switching to the structural implementation; an event that exceeds the retry limit (5 attempts by default) is left out of the summary. See the [team context guide](team-context.md) for details.
 
 ## Development
 
