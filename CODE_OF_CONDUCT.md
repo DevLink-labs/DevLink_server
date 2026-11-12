@@ -1,6 +1,6 @@
 # Community Code of Conduct
 
-**English** · [한국어](CODE_OF_CONDUCT.ko.md)
+**English** · [한국어](docs/ko/CODE_OF_CONDUCT.md)
 
 [Project overview](README.md) · [Contributing guide](CONTRIBUTING.md) · [Security policy](SECURITY.md)
 

@@ -2,7 +2,7 @@
 
 [English](SECURITY.md) · **한국어**
 
-[프로젝트 소개](README.ko.md) · [커뮤니티 행동 규칙](CODE_OF_CONDUCT.ko.md) · [기여 가이드](CONTRIBUTING.ko.md)
+[프로젝트 소개](README.ko.md) · [커뮤니티 행동 규칙](docs/ko/CODE_OF_CONDUCT.md) · [기여 가이드](CONTRIBUTING.ko.md)
 
 ## 취약점 제보
 

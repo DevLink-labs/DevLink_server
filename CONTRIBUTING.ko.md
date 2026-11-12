@@ -2,13 +2,13 @@
 
 [English](CONTRIBUTING.md) · **한국어**
 
-[프로젝트 소개](README.ko.md) · [커뮤니티 행동 규칙](CODE_OF_CONDUCT.ko.md) · [보안 정책](SECURITY.ko.md)
+[프로젝트 소개](README.ko.md) · [커뮤니티 행동 규칙](docs/ko/CODE_OF_CONDUCT.md) · [보안 정책](SECURITY.ko.md)
 
 DevLink Server의 버그 제보, 문서 개선과 기능 제안을 환영합니다. 이 문서는 서버 저장소의 개발 환경과 기존 브랜치·커밋·PR 규칙을 정리한 기본 가이드이며, 상세 기여 절차는 추후 보완합니다.
 
 ## 시작하기
 
-- [커뮤니티 행동 규칙](CODE_OF_CONDUCT.ko.md)을 확인해 주세요.
+- [커뮤니티 행동 규칙](docs/ko/CODE_OF_CONDUCT.md)을 확인해 주세요.
 - 일반 오류와 기능 제안은 [Issues](https://github.com/SSAFY-URAYAHA/DevLink_server/issues)에 남겨주세요. 오류 제보에는 사용 환경, 재현 방법, 기대한 동작과 실제 동작을 포함합니다.
 - 보안 취약점은 공개 Issue 대신 [보안 정책](SECURITY.ko.md)의 제보 절차를 따릅니다.
 - PR에는 변경 목적과 범위, 관련 Issue, 실행한 검사·테스트와 결과를 기록합니다. 비밀번호·토큰·개인 설정 파일은 포함하지 않습니다.

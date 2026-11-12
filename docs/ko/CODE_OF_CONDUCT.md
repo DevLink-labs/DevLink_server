@@ -1,8 +1,8 @@
 # 커뮤니티 행동 규칙
 
-[English](CODE_OF_CONDUCT.md) · **한국어**
+[English](../../CODE_OF_CONDUCT.md) · **한국어**
 
-[프로젝트 소개](README.ko.md) · [기여 가이드](CONTRIBUTING.ko.md) · [보안 정책](SECURITY.ko.md)
+[프로젝트 소개](../../README.ko.md) · [기여 가이드](../../CONTRIBUTING.ko.md) · [보안 정책](../../SECURITY.ko.md)
 
 DevLink는 서로를 존중하며 질문하고, 배우고, 기여할 수 있는 커뮤니티를 지향합니다. 이 규칙은 저장소의 Issues, Pull Requests, 코드 리뷰 등 프로젝트가 관리하는 협업 공간에 적용됩니다.
 
@@ -25,4 +25,4 @@ DevLink는 서로를 존중하며 질문하고, 배우고, 기여할 수 있는 
 
 관리자는 상황을 검토해 게시물 수정·삭제 요청, 경고, 프로젝트 공간 참여 제한 등의 조치를 취할 수 있습니다. 조치는 문제의 정도와 반복 여부를 고려해 결정합니다.
 
-보안 취약점 제보는 [보안 정책](SECURITY.ko.md)을 따라주세요. 개발 참여 방법은 [기여 가이드](CONTRIBUTING.ko.md)에서 확인할 수 있습니다.
+보안 취약점 제보는 [보안 정책](../../SECURITY.ko.md)을 따라주세요. 개발 참여 방법은 [기여 가이드](../../CONTRIBUTING.ko.md)에서 확인할 수 있습니다.
