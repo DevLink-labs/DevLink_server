@@ -6,6 +6,11 @@ devlink:
     task-message-sync:
         # 테스트 전용 고정 키이며 운영 환경에서는 별도의 무작위 키를 설정한다.
         cursor-secret: test-only-task-message-cursor-secret-2026
+    recommendation:
+        decision-model:
+            # 개발자 환경 변수에 키가 있어도 테스트는 외부 API를 호출하지 않는다.
+            enabled: false
+            api-key: ""
     outbox:
         # 기존 저장 테스트는 PENDING을 검증하므로 자동 발행 대신 테스트가 명시적으로 실행한다.
         publisher-enabled: false

@@ -59,6 +59,8 @@ curl -i http://localhost:8080/api/v1/teams    # 401 JSON (리다이렉트 없음
 | DB_PASSWORD | devlink | PostgreSQL 비밀번호 |
 | CORS_ALLOWED_ORIGINS | https://devlinkfrontend.vercel.app,https://devlink.ai.kr | REST API 허용 Origin (쉼표 구분, 쿠키 포함 요청 허용) |
 | WS_ALLOWED_ORIGINS | http://localhost:3000 | WebSocket 허용 Origin (쉼표 구분) |
+| DECISION_MODEL_ENABLED | false | 담당 Agent 추천의 역할 태그 판정에 결정 모델 사용 (선택, [문서](docs/agent-recommendation.md)) |
+| DECISION_MODEL_API_KEY | (없음) | Gemini API 키. 비어 있으면 켜도 호출하지 않는다 |
 
 prod 프로필의 DB·WebSocket 설정은 기본값 없이 작업 디렉터리의 `.env` 또는 환경 변수에서 값을 받습니다: `java -jar build/libs/app.jar --spring.profiles.active=prod`. `.env`는 커밋하지 않습니다. 운영 키 목록은 [deploy/.prod.env.example](deploy/.prod.env.example)에 있으며 실제 값은 GitHub Secret `PROD_ENV`로 관리합니다.
 

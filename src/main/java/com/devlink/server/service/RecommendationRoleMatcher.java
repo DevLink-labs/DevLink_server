@@ -13,6 +13,7 @@ import com.devlink.server.domain.agent.Agent;
  * 질문 토큰에서 Agent 역할 태그를 찾는다.
  * 명시 태그가 비어 있으면 역할 설명을 구분자로 나눈 fallback 태그를 사용한다.
  * 태그 토큰 연속열이 질문에 그대로 나타나면 일치하며, 마지막 태그 토큰이 한글 음절뿐이면 조사 하나가 붙은 형태도 허용한다.
+ * 결정 모델이 켜져 있으면 토큰으로 일치하지 않은 태그에 한해 모델 판정을 일치로 더한다.
  */
 public final class RecommendationRoleMatcher {
     static final int MAX_TAGS = 10;
@@ -26,13 +27,49 @@ public final class RecommendationRoleMatcher {
 
     /** 질문과 일치한 표시 태그 목록. 같은 태그는 한 번만 센다. */
     public static List<String> matchedRoles(Agent agent, List<String> questionTokens) {
+        return matchedRoles(agent, questionTokens, Set.of());
+    }
+
+    /**
+     * 토큰 일치에 결정 모델이 일치로 판정한 표시 태그를 더한다. 모델 판정은 일치를 추가만 하며,
+     * 토큰으로 일치한 태그는 모델 결과와 무관하게 유지한다. 순서는 태그 선언 순서다.
+     * 모델로 더하는 태그는 Agent당 선언 순서상 첫 하나뿐이다. 무엇에나 맞도록 쓴 태그 여러 개로
+     * 역할 점수를 채우지 못하게 모델 몫을 태그 하나(20점)로 제한한다.
+     */
+    public static List<String> matchedRoles(Agent agent, List<String> questionTokens, Set<String> modelMatched) {
+        boolean modelAllowed = !modelMatched.isEmpty() && modelEligible(agent);
         List<String> matched = new ArrayList<>();
         for (Map.Entry<String, List<String>> tag : candidateTags(agent).entrySet()) {
             if (containsSequence(questionTokens, tag.getValue())) {
                 matched.add(tag.getKey());
+            } else if (modelAllowed && modelMatched.contains(tag.getKey())) {
+                matched.add(tag.getKey());
+                modelAllowed = false;
             }
         }
         return List.copyOf(matched);
+    }
+
+    /**
+     * 토큰으로 일치하지 않아 결정 모델에 물어볼 표시 태그 목록.
+     * 명시 태그만 대상이다. 역할 설명을 나눈 fallback 태그는 자유 문장이라 외부로 보내지 않는다.
+     */
+    static List<String> unmatchedTags(Agent agent, List<String> questionTokens) {
+        if (!modelEligible(agent)) {
+            return List.of();
+        }
+        List<String> unmatched = new ArrayList<>();
+        for (Map.Entry<String, List<String>> tag : candidateTags(agent).entrySet()) {
+            if (!containsSequence(questionTokens, tag.getValue())) {
+                unmatched.add(tag.getKey());
+            }
+        }
+        return List.copyOf(unmatched);
+    }
+
+    /** 명시 태그가 있는 Agent만 결정 모델 판정 대상이다. {@link #candidateTags}가 명시 태그를 쓰는 조건과 같다. */
+    private static boolean modelEligible(Agent agent) {
+        return !agent.getRoles().isEmpty();
     }
 
     /** 표시 태그 → 정규화 토큰. 정규화 결과가 같은 태그는 먼저 나온 것만 남기고 최대 10개를 사용한다. */
