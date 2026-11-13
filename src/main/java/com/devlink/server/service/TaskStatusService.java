@@ -13,6 +13,7 @@ import com.devlink.server.domain.taskevent.TaskEvent;
 import com.devlink.server.domain.taskevent.TaskEventType;
 import com.devlink.server.dto.ChangeTaskStatusRequest;
 import com.devlink.server.dto.ChangeTaskStatusResponse;
+import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.TaskRepository;
 import com.devlink.server.repository.TaskEventRepository;
 import lombok.RequiredArgsConstructor;
@@ -27,12 +28,31 @@ public class TaskStatusService {
     private final OutboxEventRepository outboxEventRepository;
     private final ObjectMapper objectMapper;
     private final TeamContextOutboxWriter teamContextOutbox;
+    private final AgentRepository agents;
+    private final TeamAuthorizationService teams;
 
     @Transactional
     public ChangeTaskStatusResponse changeStatus(Long taskId, Long agentId, ChangeTaskStatusRequest request) {
-        Task task = taskRepository.findByIdForUpdate(taskId)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+        return changeStatus(lockTask(taskId), agentId, request);
+    }
 
+    @Transactional
+    public ChangeTaskStatusResponse acceptWebTask(Long teamId, Long taskId, Long userId, Long version) {
+        teams.requireTeamMember(userId, teamId);
+        Task task = lockTask(taskId);
+        if (!task.getTeamId().equals(teamId)) {
+            throw new BusinessException(ErrorCode.ACCESS_DENIED);
+        }
+        var receiver = agents.findById(task.getReceiverAgentId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+        if (!receiver.getTeamId().equals(teamId) || !receiver.getOwnerUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.ACCESS_DENIED);
+        }
+        return changeStatus(task, receiver.getId(),
+                new ChangeTaskStatusRequest(TaskStatus.IN_PROGRESS, version, null, null, null));
+    }
+
+    private ChangeTaskStatusResponse changeStatus(Task task, Long agentId, ChangeTaskStatusRequest request) {
         if (!task.getReceiverAgentId().equals(agentId)) {
             throw new BusinessException(ErrorCode.ACCESS_DENIED);
         }
@@ -68,6 +88,7 @@ public class TaskStatusService {
             default -> throw new BusinessException(ErrorCode.VALIDATION_FAILED);
         }
 
+        Long taskId = task.getId();
         TaskEvent history = taskEventRepository.save(TaskEvent.of(taskId, TaskEventType.STATUS_CHANGED,
                 previous + " → " + task.getStatus() + ": " + description));
         // 이력과 상태를 함께 flush한다. 동시 변경은 @Version으로 검출하고 전체 롤백한다.
@@ -81,5 +102,10 @@ public class TaskStatusService {
                 "TASK", taskId.toString(), TaskStatusChangedMessage.DESTINATION, "TASK:" + taskId,
                 objectMapper.valueToTree(message)));
         return ChangeTaskStatusResponse.from(task);
+    }
+
+    private Task lockTask(Long taskId) {
+        return taskRepository.findByIdForUpdate(taskId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
     }
 }
