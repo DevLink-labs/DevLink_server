@@ -14,7 +14,7 @@
 | GET | `/api/v1/auth/users/me` | 로그인 세션 / 200, 사용자 정보 |
 | POST | `/api/v1/auth/logout` | 로그인 세션과 CSRF 토큰 / 200, `data=null` |
 
-사용자 정보에는 `userId`, `email`, `name`, `nickname`, `createdAt`을 반환하며 비밀번호·해시는 포함하지 않습니다. 이메일은 앞뒤 공백을 제거하고 소문자로 저장·조회합니다. 가입 비밀번호는 최소 8자이며 가입·로그인 모두 UTF-8 기준 72바이트 이하로 제한합니다. 이메일 중복은 `409 EMAIL_ALREADY_EXISTS`, 계정 또는 비밀번호 불일치는 `401 INVALID_CREDENTIALS`, 입력 오류는 `400 VALIDATION_FAILED`입니다.
+사용자 정보에는 `userId`, `email`, `name`, `nickname`, `createdAt`을 반환하며 비밀번호·해시는 포함하지 않습니다. 이메일은 앞뒤 공백을 제거하고 소문자로 저장·조회합니다. 가입 비밀번호는 공백 없이 영문 대문자·소문자·숫자·ASCII 특수문자만 사용해 8~32자로 입력하며, 네 종류 중 세 종류 이상을 포함해야 합니다. 로그인 비밀번호는 공백 외 문자가 하나 이상 있어야 하며 UTF-8 기준 72바이트 이하여야 합니다. 이메일 중복은 `409 EMAIL_ALREADY_EXISTS`, 계정 또는 비밀번호 불일치는 `401 INVALID_CREDENTIALS`, 입력 오류는 `400 VALIDATION_FAILED`입니다.
 
 로그인과 회원가입 중복 검사는 소문자로 변환한 입력값을 일반 동등 비교해 기존 `uk_users_email` 색인을 활용할 수 있도록 합니다. V12는 기존 대문자 이메일을 소문자로 정리하며 변환 시 중복 계정이 있으면 마이그레이션을 중단합니다. 문제 분석·이전 실험 기록·후속 측정 절차는 [이메일 조회 리팩토링 기록](performance/email-lookup-refactoring.md)에 정리했습니다.
 
