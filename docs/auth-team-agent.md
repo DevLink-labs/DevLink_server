@@ -10,8 +10,8 @@
 | --- | --- | --- |
 | GET | `/api/v1/auth/csrf` | 200, `headerName`, `parameterName`, `token` |
 | POST | `/api/v1/auth/signup` | `email`, `password`, `name`, 선택 `nickname` / 201, 사용자 정보 |
-| POST | `/api/v1/auth/login` | `email`, `password` / 200, 사용자 정보와 세션 쿠키 |
-| GET | `/api/v1/auth/users/me` | 로그인 세션 / 200, 사용자 정보 |
+| POST | `/api/v1/auth/login` | `email`, `password`, 선택 `rememberMe` / 200, 사용자 정보와 세션 쿠키 |
+| GET | `/api/v1/auth/users/me` | 로그인 세션 또는 자동 로그인 쿠키 / 200, 사용자 정보 |
 | POST | `/api/v1/auth/logout` | 로그인 세션과 CSRF 토큰 / 200, `data=null` |
 
 사용자 정보에는 `userId`, `email`, `name`, `nickname`, `createdAt`을 반환하며 비밀번호·해시는 포함하지 않습니다. 이메일은 앞뒤 공백을 제거하고 소문자로 저장·조회합니다. 가입 비밀번호는 공백 없이 영문 대문자·소문자·숫자·ASCII 특수문자만 사용해 8~32자로 입력하며, 네 종류 중 세 종류 이상을 포함해야 합니다. 로그인 비밀번호는 공백 외 문자가 하나 이상 있어야 하며 UTF-8 기준 72바이트 이하여야 합니다. 이메일 중복은 `409 EMAIL_ALREADY_EXISTS`, 계정 또는 비밀번호 불일치는 `401 INVALID_CREDENTIALS`, 입력 오류는 `400 VALIDATION_FAILED`입니다.
@@ -23,10 +23,12 @@
 1. `GET /api/v1/auth/csrf`로 토큰을 받고 `data.headerName`을 이름으로, `data.token`을 값으로 POST 요청 헤더에 전달합니다.
 2. 회원가입 후 같은 세션과 CSRF 토큰으로 로그인합니다. 로그인 시 세션 ID와 CSRF 토큰이 교체됩니다.
 3. 로그인 후 `GET /api/v1/auth/csrf`를 다시 호출해 이후 POST 요청에 사용할 토큰을 갱신합니다.
-4. 새로고침 후에는 `GET /api/v1/auth/users/me`로 사용자 정보를 복원합니다. 미로그인·세션 만료 시 401입니다.
+4. 새로고침이나 앱 재실행 후에는 `GET /api/v1/auth/users/me`로 사용자 정보를 복원합니다. 세션과 자동 로그인 쿠키가 모두 유효하지 않으면 401입니다.
 5. 갱신한 CSRF 토큰으로 로그아웃합니다. 다음 로그인 전에도 CSRF 토큰을 다시 조회합니다.
 
-세션은 서버 메모리에 저장하며 30분 동안 요청이 없으면 만료됩니다. 세션 쿠키는 HttpOnly이며 로컬에서는 SameSite=Lax, 운영에서는 HTTPS용 Secure와 SameSite=None을 사용합니다. 운영 브라우저가 서드파티 쿠키를 차단하면 별도 사이트 간 로그인 유지가 제한될 수 있습니다. 브라우저 로그아웃은 사용자 세션만 종료하며 Agent 토큰·브로커 연결을 폐기하지 않습니다.
+세션은 서버 메모리에 저장하며 30분 동안 요청이 없으면 만료됩니다. 세션 쿠키는 HttpOnly이며 로컬에서는 SameSite=Lax, 운영에서는 HTTPS용 Secure와 SameSite=None을 사용합니다. 운영 브라우저가 서드파티 쿠키를 차단하면 별도 사이트 간 로그인 유지가 제한될 수 있습니다. 브라우저 로그아웃은 사용자 세션과 해당 브라우저의 자동 로그인 토큰을 종료하며 Agent 토큰·브로커 연결을 폐기하지 않습니다.
+
+`rememberMe: true`로 로그인하면 `DEVLINK_REMEMBER_ME` 쿠키를 발급합니다. 쿠키와 서버 토큰은 발급 시점부터 14일간 유효하며, 자동 로그인으로 세션을 복원해도 만료 시각은 연장되지 않습니다. 쿠키는 세션과 동일한 HttpOnly·Secure·SameSite 정책을 따르며, 서버는 토큰의 SHA-256 해시만 DB에 저장합니다. `rememberMe`를 생략하거나 `false`로 로그인하면 해당 브라우저의 자동 로그인 쿠키와 토큰을 폐기합니다.
 
 로그인 시 내부 `UserPrincipal(userId)`를 저장하고 권한 검사에 사용할 `userId`를 같은 세션에 기록합니다. 사용자 인증·팀 관리·Agent 등록·토큰 발급은 이 사용자 세션과 CSRF 계약을 유지합니다. 작업 생성·상태 변경·조회는 아래의 Agent Bearer 인증을 사용합니다. OAuth 외부 계정 연결과 다중 서버용 세션 저장소는 후속 범위입니다.
 
