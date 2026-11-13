@@ -9,6 +9,7 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -33,6 +34,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.TestPropertySource;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,11 +48,13 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
         onlineBrokers.add(OnlineTestBroker.connect(port, token, id, agents));
     }
     private static final String PASSWORD = "ValidPassword123!";
+    private static final String REMEMBER_ME_COOKIE = "DEVLINK_REMEMBER_ME=";
 
     @LocalServerPort private int port;
     @Autowired private ObjectMapper json;
     @Autowired private UserRepository users;
     @Autowired private PasswordEncoder passwords;
+    @Autowired private JdbcTemplate jdbc;
     @Autowired private TeamRepository teams;
     @Autowired private TeamMemberRepository members;
     @Autowired private AgentRepository agents;
@@ -176,6 +180,79 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
                     });
             assertError(browser.get("/api/v1/auth/users/me"), 401, "AUTHENTICATION_REQUIRED");
             assertError(getWithSession(authenticatedSessionId), 401, "AUTHENTICATION_REQUIRED");
+        }
+    }
+
+    @Test
+    void rememberMeRestoresSessionAndLogoutRevokesRememberedLogin() throws Exception {
+        var user = users.saveAndFlush(User.create(newEmail(), "Remembered user", null, passwords.encode(PASSWORD)));
+        String rememberCookie = issueRememberCookie(user.getEmail());
+        assertThat(rememberCookie.toLowerCase(Locale.ROOT))
+                .contains("max-age=1209600", "httponly", "path=/");
+        String expiryQuery = "select expires_at from remember_login_tokens where user_id = ?";
+        var originalExpiry = jdbc.queryForObject(expiryQuery, OffsetDateTime.class, user.getId());
+        assertThat(originalExpiry).isNotNull();
+
+        try (var restarted = new Browser()) {
+            restarted.restoreRememberCookie(rememberCookie);
+            assertThat(restarted.sessionId()).isEmpty();
+
+            var restored = restarted.get("/api/v1/auth/users/me");
+            assertSuccess(restored, 200);
+            assertThat(restored.body().path("data").path("userId").asLong()).isEqualTo(user.getId());
+            String restoredSessionId = restarted.sessionId();
+            assertThat(restoredSessionId).isNotBlank();
+            assertSuccess(getWithSession(restoredSessionId), 200);
+            assertThat(jdbc.queryForObject(expiryQuery, OffsetDateTime.class, user.getId())).isEqualTo(originalExpiry);
+
+            var logout = restarted.post("/api/v1/auth/logout", null, restarted.csrf());
+            assertSuccess(logout, 200);
+            assertRememberCookieCleared(logout);
+            assertError(getWithSession(restoredSessionId), 401, "AUTHENTICATION_REQUIRED");
+        }
+
+        try (var replay = new Browser()) {
+            replay.restoreRememberCookie(rememberCookie);
+            assertError(replay.get("/api/v1/auth/users/me"), 401, "AUTHENTICATION_REQUIRED");
+        }
+    }
+
+    @Test
+    void expiredRememberMeTokenCannotRestoreSession() throws Exception {
+        var user = users.saveAndFlush(User.create(newEmail(), "Expired user", null, passwords.encode(PASSWORD)));
+        String rememberCookie = issueRememberCookie(user.getEmail());
+        assertThat(jdbc.update("""
+                update remember_login_tokens set expires_at = current_timestamp - interval '1 second'
+                where user_id = ?
+                """, user.getId())).isEqualTo(1);
+
+        try (var restarted = new Browser()) {
+            restarted.restoreRememberCookie(rememberCookie);
+            var response = restarted.get("/api/v1/auth/users/me");
+            assertError(response, 401, "AUTHENTICATION_REQUIRED");
+            assertRememberCookieCleared(response);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void signingInWithoutOptingInRevokesRememberMe(boolean omitRememberMe) throws Exception {
+        String email = newEmail();
+        users.saveAndFlush(User.create(email, "Regular user", null, passwords.encode(PASSWORD)));
+        String rememberCookie = issueRememberCookie(email);
+        Map<String, Object> body = omitRememberMe ? loginBody(email, PASSWORD)
+                : Map.of("email", email, "password", PASSWORD, "rememberMe", false);
+
+        try (var browser = new Browser()) {
+            browser.restoreRememberCookie(rememberCookie);
+            var login = browser.post("/api/v1/auth/login", body, browser.csrf());
+            assertSuccess(login, 200);
+            assertRememberCookieCleared(login);
+        }
+
+        try (var replay = new Browser()) {
+            replay.restoreRememberCookie(rememberCookie);
+            assertError(replay.get("/api/v1/auth/users/me"), 401, "AUTHENTICATION_REQUIRED");
         }
     }
 
@@ -428,6 +505,25 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
         return login.body().path("data").path("userId").asLong();
     }
 
+    private String issueRememberCookie(String email) throws Exception {
+        try (var browser = new Browser()) {
+            var login = browser.post("/api/v1/auth/login",
+                    Map.of("email", email, "password", PASSWORD, "rememberMe", true), browser.csrf());
+            assertSuccess(login, 200);
+            return login.headers().allValues("Set-Cookie").stream()
+                    .filter(cookie -> cookie.startsWith(REMEMBER_ME_COOKIE))
+                    .findFirst().orElseThrow();
+        }
+    }
+
+    private void assertRememberCookieCleared(HttpResult response) {
+        assertThat(response.headers().allValues("Set-Cookie"))
+                .anySatisfy(cookie -> {
+                    assertThat(cookie).startsWith(REMEMBER_ME_COOKIE + ";");
+                    assertThat(cookie.toLowerCase(Locale.ROOT)).contains("max-age=0", "path=/");
+                });
+    }
+
     private HttpResult getWithSession(String sessionId) throws Exception {
         try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build()) {
             var request = HttpRequest.newBuilder(uri("/api/v1/auth/users/me"))
@@ -563,6 +659,12 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
             return cookies.getCookieStore().getCookies().stream()
                     .filter(cookie -> "JSESSIONID".equals(cookie.getName()) && !cookie.hasExpired())
                     .map(HttpCookie::getValue).findFirst().orElse("");
+        }
+
+        private void restoreRememberCookie(String header) {
+            HttpCookie cookie = HttpCookie.parse(header).getFirst();
+            cookie.setVersion(0);
+            cookies.getCookieStore().add(uri("/"), cookie);
         }
 
         @Override
