@@ -11,6 +11,20 @@ devlink:
         require-if-match: ${WORKING_FILES_REQUIRE_IF_MATCH:false}
     task-message-sync:
         cursor-secret: ${TASK_MESSAGE_CURSOR_SECRET:}
+    recommendation:
+        decision-model:
+            # 담당 Agent 추천의 역할 태그 판정 보강. 기본은 꺼짐이다. 기본 대상은 OpenRouter Decisions API이며 키가 있어야 켜진다.
+            # 같은 형식을 받는 자체 호스팅 서버는 url을 바꾸고 require-api-key를 false로 둔다(키가 없을 때만 다른 호스트의 http 허용).
+            # 켜면 질문과 팀원의 명시 역할 태그가 이 주소로 전송된다. 호출 실패·시간 초과 시 기존 토큰 일치만으로 계산한다.
+            enabled: ${DECISION_MODEL_ENABLED:false}
+            api-key: ${DECISION_MODEL_API_KEY:}
+            require-api-key: ${DECISION_MODEL_REQUIRE_API_KEY:true}
+            url: ${DECISION_MODEL_URL:https://openrouter.ai/api/alpha/decisions}
+            model: ${DECISION_MODEL_MODEL:google/gemini-decision-1}
+            # 모델이 시간 초과하면 이 값만큼 응답이 늦어진다. 브로커의 중앙 호출 제한이 5초이므로 최대 2000이다.
+            timeout-ms: ${DECISION_MODEL_TIMEOUT_MS:1500}
+            # 모델의 일치 확률이 이 값 이상이면 태그 일치로 본다.
+            threshold: ${DECISION_MODEL_THRESHOLD:0.7}
     outbox:
         publisher-enabled: true
         poll-interval-ms: 1000

@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
+import com.devlink.server.client.RoleDecisionClient;
 import com.devlink.server.common.BusinessException;
 import com.devlink.server.common.ErrorCode;
 import com.devlink.server.domain.AgentPrincipal;
@@ -27,13 +28,18 @@ import com.devlink.server.service.RecommendationGitEvidence.UserEvidence;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionOperations;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * 담당 Agent 추천. 질문을 토큰화해 역할 태그 점수를 구하고, 팀 전체 저장소의 Git 근거를 소유자 단위로 더한다.
  * 추천 계산을 완료했지만 근거가 없는 경우는 정상 응답이고, DB 접근 실패만 GIT_ROUTING_UNAVAILABLE이다.
+ * 결정 모델이 켜져 있으면 토큰으로 일치하지 않은 역할 태그만 모델에 물어 일치를 더한다. 외부 호출은 DB 트랜잭션
+ * 밖에서 하며, 실패하면 토큰 일치만으로 계산해 응답과 오류 코드가 기능을 끈 경우와 같다.
  */
 @Service
 public class AgentRecommendationService {
@@ -54,18 +60,43 @@ public class AgentRecommendationService {
     private final RecommendationGitEvidenceService gitEvidence;
     private final AgentPresenceService presence;
     private final Clock clock;
+    private final RoleDecisionClient roleDecisions;
+    private final TransactionOperations transactions;
 
+    @Autowired
+    public AgentRecommendationService(AgentRepository agents, TeamAuthorizationService teams,
+            RecommendationGitEvidenceService gitEvidence, AgentPresenceService presence,
+            ObjectProvider<Clock> clocks, RoleDecisionClient roleDecisions,
+            PlatformTransactionManager transactionManager) {
+        this(agents, teams, gitEvidence, presence, clocks, roleDecisions, readOnly(transactionManager));
+    }
+
+    /** 결정 모델 없이 트랜잭션 경계를 만들지 않고 계산한다. 협력 객체를 대체하는 단위 테스트용이다. */
     public AgentRecommendationService(AgentRepository agents, TeamAuthorizationService teams,
             RecommendationGitEvidenceService gitEvidence, AgentPresenceService presence,
             ObjectProvider<Clock> clocks) {
+        this(agents, teams, gitEvidence, presence, clocks, RoleDecisionClient.disabled(),
+                TransactionOperations.withoutTransaction());
+    }
+
+    AgentRecommendationService(AgentRepository agents, TeamAuthorizationService teams,
+            RecommendationGitEvidenceService gitEvidence, AgentPresenceService presence,
+            ObjectProvider<Clock> clocks, RoleDecisionClient roleDecisions, TransactionOperations transactions) {
         this.agents = agents;
         this.teams = teams;
         this.gitEvidence = gitEvidence;
         this.presence = presence;
         this.clock = clocks.getIfAvailable(Clock::systemUTC);
+        this.roleDecisions = roleDecisions;
+        this.transactions = transactions;
     }
 
-    @Transactional(readOnly = true)
+    private static TransactionOperations readOnly(PlatformTransactionManager transactionManager) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setReadOnly(true);
+        return template;
+    }
+
     public AgentRecommendationResponse recommend(Long teamId, AgentPrincipal principal,
             AgentRecommendationRequest request) {
         if (principal == null) {
@@ -76,8 +107,11 @@ public class AgentRecommendationService {
             throw new BusinessException(ErrorCode.ACCESS_DENIED);
         }
         try {
-            teams.requireTeamMember(principal.ownerUserId(), teamId);
-            return evaluate(teamId, principal.agentId(), question);
+            Set<String> modelMatched = modelMatchedTags(teamId, principal, question);
+            return transactions.execute(status -> {
+                teams.requireTeamMember(principal.ownerUserId(), teamId);
+                return evaluate(teamId, principal.agentId(), question, modelMatched);
+            });
         } catch (DataAccessException exception) {
             log.error("Agent recommendation failed for team {}", teamId, exception);
             throw new BusinessException(ErrorCode.GIT_ROUTING_UNAVAILABLE);
@@ -99,14 +133,39 @@ public class AgentRecommendationService {
         return question;
     }
 
-    private AgentRecommendationResponse evaluate(Long teamId, long requesterAgentId, String question) {
+    /**
+     * 결정 모델이 일치로 판정한 표시 태그. 꺼져 있으면 조회도 호출도 하지 않는다.
+     * 멤버십을 먼저 확인한 뒤 후보의 태그 중 토큰으로 일치하지 않은 것만 모으고, 트랜잭션을 끝낸 다음 한 번 호출한다.
+     */
+    private Set<String> modelMatchedTags(Long teamId, AgentPrincipal principal, String question) {
+        if (!roleDecisions.enabled()) {
+            return Set.of();
+        }
+        List<String> questionTokens = RecommendationTokenizer.tokenize(question);
+        List<String> pending = transactions.execute(status -> {
+            teams.requireTeamMember(principal.ownerUserId(), teamId);
+            Set<String> tags = new LinkedHashSet<>();
+            for (Agent agent : candidates(teamId, principal.agentId())) {
+                tags.addAll(RecommendationRoleMatcher.unmatchedTags(agent, questionTokens));
+            }
+            return List.copyOf(tags);
+        });
+        return pending.isEmpty() ? Set.of() : roleDecisions.matchedTags(question, pending);
+    }
+
+    /** 소유자가 현재 팀 멤버인 Agent만 후보로 조회하고 요청 Agent 자신을 뺀다. */
+    private List<Agent> candidates(Long teamId, long requesterAgentId) {
+        return agents.findRecommendationCandidates(teamId).stream()
+                .filter(agent -> agent.getId() != requesterAgentId)
+                .toList();
+    }
+
+    private AgentRecommendationResponse evaluate(Long teamId, long requesterAgentId, String question,
+            Set<String> modelMatched) {
         // 평가 시각은 요청당 한 번 정해 모든 기간·경과 계산에 동일하게 쓴다.
         Instant evaluatedAt = Instant.now(clock);
         List<String> questionTokens = RecommendationTokenizer.tokenize(question);
-        // 소유자가 현재 팀 멤버인 Agent만 후보로 조회하고 요청 Agent 자신을 뺀다.
-        List<Agent> candidates = agents.findRecommendationCandidates(teamId).stream()
-                .filter(agent -> agent.getId() != requesterAgentId)
-                .toList();
+        List<Agent> candidates = candidates(teamId, requesterAgentId);
         Set<Long> candidateUserIds = new LinkedHashSet<>();
         candidates.forEach(agent -> candidateUserIds.add(agent.getOwnerUserId()));
 
@@ -120,7 +179,8 @@ public class AgentRecommendationService {
 
         List<ScoredCandidate> scored = new ArrayList<>();
         for (Agent agent : candidates) {
-            scored.add(score(agent, questionTokens, evidence.forUser(agent.getOwnerUserId()), evaluatedAt));
+            scored.add(score(agent, questionTokens, evidence.forUser(agent.getOwnerUserId()), evaluatedAt,
+                    modelMatched));
         }
         scored.sort(RANKING);
 
@@ -145,8 +205,8 @@ public class AgentRecommendationService {
     }
 
     private static ScoredCandidate score(Agent agent, List<String> questionTokens, UserEvidence evidence,
-            Instant evaluatedAt) {
-        List<String> matchedRoles = RecommendationRoleMatcher.matchedRoles(agent, questionTokens);
+            Instant evaluatedAt, Set<String> modelMatched) {
+        List<String> matchedRoles = RecommendationRoleMatcher.matchedRoles(agent, questionTokens, modelMatched);
         double role = RecommendationScorePolicy.role(matchedRoles.size());
         double working = RecommendationScorePolicy.working(evidence.workingWeight());
         double frequency = RecommendationScorePolicy.frequency(evidence.weightedCommitCount());

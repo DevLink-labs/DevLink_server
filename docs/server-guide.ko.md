@@ -66,8 +66,10 @@
 | `TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY` | 추론 API 키 필수 여부 | 기본 `true`. 키 없는 자체 호스팅 서버는 `false` |
 | `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS` | 요약 출력 토큰 한도 | 기본 `6000` |
 | `TEAM_CONTEXT_INFERENCE_TIMEOUT_MS` | 요약 한 번의 제한 시간 | 기본 `60000` |
+| `DECISION_MODEL_ENABLED` | 담당 Agent 추천의 역할 태그 판정에 결정 모델 사용 | 기본 `false`, 선택 ([문서](agent-recommendation.md)) |
+| `DECISION_MODEL_API_KEY` | 결정 모델 엔드포인트(기본 OpenRouter)로 보내는 키 | 기본 비어 있음. 비어 있으면 켜도 호출하지 않음(키 없는 자체 호스팅 설정 제외). `OPENROUTER_API_KEY`와 따로 읽으므로 같은 키를 쓰더라도 여기에도 지정 |
 
-로컬 JVM은 `.env`를 읽고, Compose는 `app.environment`에 선언된 변수를 컨테이너로 전달합니다. 새 변수를 추가할 때는 Compose 전달 설정도 확인합니다. `WORKING_FILES_REQUIRE_IF_MATCH`는 운영 Compose에서 전달하며, 로컬 Compose에서 사용하려면 전달 설정을 추가합니다.
+로컬 JVM은 `.env`를 읽고, Compose는 `app.environment`에 선언된 변수를 컨테이너로 전달합니다. 새 변수를 추가할 때는 Compose 전달 설정도 확인합니다. `WORKING_FILES_REQUIRE_IF_MATCH`와 `DECISION_MODEL_*`는 운영 Compose에서만 전달하며, 로컬 Compose에서 사용하려면 전달 설정을 추가합니다.
 
 ### 외부 LLM 요약 — 선택
 

@@ -1,6 +1,7 @@
 package com.devlink.server.service;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.IntStream;
 import com.devlink.server.domain.agent.Agent;
 import com.devlink.server.domain.agent.AgentPart;
@@ -63,6 +64,36 @@ class RecommendationRoleMatcherTest {
     void agentWithoutTagsNeverMatches() {
         assertThat(RecommendationRoleMatcher.matchedRoles(agent(List.of(), null), QUESTION)).isEmpty();
         assertThat(RecommendationRoleMatcher.matchedRoles(agent(List.of(" ", "?"), " , "), QUESTION)).isEmpty();
+    }
+
+    @Test
+    void modelMatchedTagsAreAddedInDeclaredOrderWithoutRemovingTokenMatches() {
+        Agent agent = agent(List.of("authentication", "로그인", "결제", "인증"), null);
+
+        assertThat(RecommendationRoleMatcher.unmatchedTags(agent, QUESTION)).containsExactly("authentication", "결제");
+        // 모델이 토큰 일치 태그를 돌려주지 않아도 유지하고, 이 Agent에 없는 태그는 무시한다.
+        assertThat(RecommendationRoleMatcher.matchedRoles(agent, QUESTION, Set.of("authentication", "배포")))
+                .containsExactly("authentication", "로그인", "인증");
+        assertThat(RecommendationRoleMatcher.matchedRoles(agent, QUESTION, Set.of()))
+                .isEqualTo(RecommendationRoleMatcher.matchedRoles(agent, QUESTION));
+    }
+
+    @Test
+    void modelAddsAtMostTheFirstDeclaredTagPerAgent() {
+        Agent agent = agent(List.of("모든 개발 질문", "로그인", "general engineering", "배포"), null);
+
+        assertThat(RecommendationRoleMatcher.matchedRoles(agent, QUESTION,
+                Set.of("배포", "general engineering", "모든 개발 질문"))).containsExactly("모든 개발 질문", "로그인");
+    }
+
+    @Test
+    void roleDescriptionFallbackTagsAreNeitherAskedNorModelMatched() {
+        Agent agent = agent(List.of(), "authentication, 담당자 hong@example.com");
+
+        assertThat(RecommendationRoleMatcher.candidateTags(agent).keySet())
+                .containsExactly("authentication", "담당자 hong@example.com");
+        assertThat(RecommendationRoleMatcher.unmatchedTags(agent, QUESTION)).isEmpty();
+        assertThat(RecommendationRoleMatcher.matchedRoles(agent, QUESTION, Set.of("authentication"))).isEmpty();
     }
 
     private static Agent agent(List<String> roles, String description) {

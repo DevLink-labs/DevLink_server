@@ -66,8 +66,10 @@ See the [controllers](../src/main/java/com/devlink/server/controller), [DTOs](..
 | `TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY` | Whether an inference API key is required | Default: `true`; set `false` for a keyless self-hosted server |
 | `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS` | Output token limit for a summary | Default: `6000` |
 | `TEAM_CONTEXT_INFERENCE_TIMEOUT_MS` | Time limit for one summary call | Default: `60000` |
+| `DECISION_MODEL_ENABLED` | Use a decision model for role-tag matching in agent recommendations | Default: `false`; optional ([guide](agent-recommendation.md)) |
+| `DECISION_MODEL_API_KEY` | Key sent to the decision model endpoint (OpenRouter by default) | Empty by default; when empty the model is not called even if enabled (except a keyless self-hosted setup). Read separately from `OPENROUTER_API_KEY`, so set it here even when you use the same key |
 
-The local JVM reads `.env`; Compose passes variables declared in `app.environment` into the container. Check the Compose configuration when adding variables. The production Compose file passes `WORKING_FILES_REQUIRE_IF_MATCH`; add it to the local Compose environment if you need it there.
+The local JVM reads `.env`; Compose passes variables declared in `app.environment` into the container. Check the Compose configuration when adding variables. Only the production Compose file passes `WORKING_FILES_REQUIRE_IF_MATCH` and `DECISION_MODEL_*`; add them to the local Compose environment if you need them there.
 
 ### External LLM summaries — optional
 
