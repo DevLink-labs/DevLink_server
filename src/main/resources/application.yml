@@ -7,8 +7,24 @@ server:
                 http-only: true
                 same-site: lax
 devlink:
+    working-files:
+        require-if-match: ${WORKING_FILES_REQUIRE_IF_MATCH:false}
     task-message-sync:
         cursor-secret: ${TASK_MESSAGE_CURSOR_SECRET:}
+    recommendation:
+        decision-model:
+            # 담당 Agent 추천의 역할 태그 판정 보강. 기본은 꺼짐이다. 기본 대상은 OpenRouter Decisions API이며 키가 있어야 켜진다.
+            # 같은 형식을 받는 자체 호스팅 서버는 url을 바꾸고 require-api-key를 false로 둔다(키가 없을 때만 다른 호스트의 http 허용).
+            # 켜면 질문과 팀원의 명시 역할 태그가 이 주소로 전송된다. 호출 실패·시간 초과 시 기존 토큰 일치만으로 계산한다.
+            enabled: ${DECISION_MODEL_ENABLED:false}
+            api-key: ${DECISION_MODEL_API_KEY:}
+            require-api-key: ${DECISION_MODEL_REQUIRE_API_KEY:true}
+            url: ${DECISION_MODEL_URL:https://openrouter.ai/api/alpha/decisions}
+            model: ${DECISION_MODEL_MODEL:google/gemini-decision-1}
+            # 모델이 시간 초과하면 이 값만큼 응답이 늦어진다. 브로커의 중앙 호출 제한이 5초이므로 최대 2000이다.
+            timeout-ms: ${DECISION_MODEL_TIMEOUT_MS:1500}
+            # 모델의 일치 확률이 이 값 이상이면 태그 일치로 본다.
+            threshold: ${DECISION_MODEL_THRESHOLD:0.7}
     outbox:
         publisher-enabled: true
         poll-interval-ms: 1000
@@ -25,16 +41,19 @@ devlink:
         max-items: 20
         prompt-version: v1
         inference:
-            # OpenAI 호환 chat/completions. 기본은 Upstage Solar이며 키가 없으면 구조 신호 전용으로 동작한다.
-            # 자체 vLLM으로 바꾸려면 base-url·model을 바꾸고 require-api-key를 false로 둔다.
-            base-url: ${TEAM_CONTEXT_INFERENCE_BASE_URL:https://api.upstage.ai/v1}
-            api-key: ${UPSTAGE_API_KEY:}
+            # OpenAI 호환 chat/completions. 기본은 OpenRouter의 openai/gpt-6-luna이며 키가 없으면 구조 신호 전용으로 동작한다.
+            # 자체 호스팅 서버(vLLM 등)로 바꾸려면 base-url·model을 바꾸고, 키가 없는 서버는 require-api-key를 false로 둔다.
+            base-url: ${TEAM_CONTEXT_INFERENCE_BASE_URL:https://openrouter.ai/api/v1}
+            api-key: ${OPENROUTER_API_KEY:}
             require-api-key: ${TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY:true}
-            model: ${TEAM_CONTEXT_INFERENCE_MODEL:solar-pro4}
-            timeout-ms: 60000
-            max-output-tokens: 2000
-            # OpenRouter를 쓸 때만 true. 스키마 미지원·학습 수집 제공자로의 라우팅을 막는다.
-            openrouter-provider-guard: ${TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD:false}
+            model: ${TEAM_CONTEXT_INFERENCE_MODEL:openai/gpt-6-luna}
+            # 응답이 느린 자체 호스팅 모델은 늘린다. 이 시간에 30초를 더한 만큼 이벤트를 점유한다.
+            timeout-ms: ${TEAM_CONTEXT_INFERENCE_TIMEOUT_MS:60000}
+            # 요약은 배열당 max-items개(세 배열 합 60개)까지 커진다. 가득 찬 요약과 추론 토큰을 담을 만큼 둔다. 과금은 실제 생성 토큰 기준이다.
+            max-output-tokens: ${TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS:6000}
+            # 스키마 미지원·학습 수집 제공자로의 라우팅을 막는 OpenRouter 전용 요청 필드. auto는 base-url이 OpenRouter일 때만 넣는다.
+            # OpenRouter 앞에 프록시나 게이트웨이를 두면 true로, 끄려면 false로 지정한다.
+            openrouter-provider-guard: ${TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD:auto}
     cors:
         allowed-origins: ${CORS_ALLOWED_ORIGINS:https://devlinkfrontend.vercel.app,https://devlink.ai.kr}
     broker:
@@ -58,6 +77,8 @@ spring:
         open-in-view: false
         hibernate:
             ddl-auto: validate
+        properties:
+            hibernate.query.in_clause_parameter_padding: true
     flyway:
         enabled: true
         locations: classpath:db/migration

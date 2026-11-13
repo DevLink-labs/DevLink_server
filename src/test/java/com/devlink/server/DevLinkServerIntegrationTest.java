@@ -38,19 +38,20 @@ class DevLinkServerIntegrationTest extends AbstractIntegrationTest {
                 .containsExactlyInAnyOrder("TaskFile", "TeamMember", "TaskEvent", "User",
                         "Team", "OutboxEvent", "Agent", "Task", "UserGitSetting",
                         "TeamGitRepository", "RepositoryCommit", "CommitFile", "WorkingFile",
-                        "FileDependency", "TeamPartContext");
+                        "FileDependency", "TeamPartContext", "WorkingFileRevision");
         assertThat(flyway.info().applied())
                 .extracting(migration -> migration.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19");
         assertThat(flyway.info().pending()).isEmpty();
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("17");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("19");
         assertThat(flyway.validateWithResult().validationSuccessful).isTrue();
         List<String> tables = jdbc.queryForList(
                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public'", String.class);
         assertThat(tables).containsExactlyInAnyOrder("users", "teams", "team_members", "agents",
                 "tasks", "task_files", "task_events", "outbox_events", "flyway_schema_history",
                 "user_git_settings", "team_repositories", "repository_commits", "commit_files",
-                "working_files", "file_dependencies", "repository_dependency_graphs", "team_part_contexts");
+                "working_files", "file_dependencies", "repository_dependency_graphs", "team_part_contexts",
+                "working_file_revisions", "remember_login_tokens");
 
         var health = rest.getForEntity("/api/v1/health", JsonNode.class);
         assertThat(health.getStatusCode()).isEqualTo(HttpStatus.OK);

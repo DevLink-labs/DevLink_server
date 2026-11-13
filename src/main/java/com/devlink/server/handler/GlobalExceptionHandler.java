@@ -5,8 +5,10 @@ import com.devlink.server.common.BusinessException;
 import com.devlink.server.common.ErrorCode;
 import com.devlink.server.domain.task.Task;
 import com.devlink.server.exception.InvalidTaskInputException;
+import com.devlink.server.exception.LoginRateLimitException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
@@ -29,6 +31,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusiness(BusinessException exception) {
         return response(exception.getErrorCode());
+    }
+
+    @ExceptionHandler(LoginRateLimitException.class)
+    public ResponseEntity<ApiResponse<Void>> handleLoginRateLimit(LoginRateLimitException exception) {
+        ErrorCode code = exception.getErrorCode();
+        return ResponseEntity.status(code.getStatus())
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(exception.getRetryAfterSeconds()))
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(ApiResponse.error(code));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

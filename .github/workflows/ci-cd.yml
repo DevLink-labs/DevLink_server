@@ -116,6 +116,10 @@ jobs:
             chmod 600 .env
             echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose -f docker-compose.prod.yml pull app
+            running_caddy=$(docker compose -f docker-compose.prod.yml ps --status running -q caddy)
+            if [ -n "$running_caddy" ]; then
+              docker compose -f docker-compose.prod.yml exec -T caddy caddy reload --config - --adapter caddyfile < Caddyfile
+            fi
             docker compose -f docker-compose.prod.yml up -d
             docker image prune -f
             docker compose -f docker-compose.prod.yml ps

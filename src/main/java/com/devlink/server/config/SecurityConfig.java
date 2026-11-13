@@ -3,10 +3,13 @@ package com.devlink.server.config;
 import java.util.List;
 import java.util.Optional;
 import com.devlink.server.filter.AgentTokenAuthenticationFilter;
+import com.devlink.server.filter.RememberLoginFilter;
 import com.devlink.server.handler.RestAccessDeniedHandler;
 import com.devlink.server.handler.RestAuthenticationEntryPoint;
 import com.devlink.server.handler.RestLogoutSuccessHandler;
 import com.devlink.server.service.AgentTokenVerifier;
+import com.devlink.server.service.RememberLoginService;
+import com.devlink.server.service.UserSessionAuthentication;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -29,6 +32,7 @@ import org.springframework.security.web.context.HttpSessionSecurityContextReposi
 import org.springframework.security.web.context.RequestAttributeSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CsrfAuthenticationStrategy;
+import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
@@ -123,7 +127,8 @@ public class SecurityConfig {
             RestAuthenticationEntryPoint entryPoint, RestAccessDeniedHandler deniedHandler,
             RestLogoutSuccessHandler logoutSuccessHandler,
             SecurityContextRepository userSecurityContextRepository,
-            HttpSessionCsrfTokenRepository userCsrfTokenRepository) throws Exception {
+            HttpSessionCsrfTokenRepository userCsrfTokenRepository,
+            RememberLoginService rememberLogin, UserSessionAuthentication sessions) throws Exception {
         // 사용자 세션 인증·CSRF 보호·로그아웃 처리 연결
         http.cors(cors -> cors.configurationSource(apiCorsConfigurationSource(allowedOrigins)))
                 .securityContext(context -> context
@@ -132,11 +137,14 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
                 .requestCache(AbstractHttpConfigurer::disable)
                 .csrf(csrf -> csrf.csrfTokenRepository(userCsrfTokenRepository))
+                .addFilterBefore(new RememberLoginFilter(rememberLogin, sessions), CsrfFilter.class)
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/auth/signup", "/api/v1/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf",
                                 "/api/v1/health", "/actuator/health").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/web/teams/{teamId}/tasks/{taskId}/accept")
+                                .hasRole("USER")
                         .requestMatchers("/api/v1/auth/users/me", "/api/v1/auth/users/me/git-identity",
                                 "/api/v1/web/events").hasRole("USER")
                         .requestMatchers("/api/v1/teams", "/api/v1/teams/**", "/api/v1/agents/**")
@@ -148,6 +156,7 @@ public class SecurityConfig {
                         .invalidateHttpSession(true)
                         .clearAuthentication(true)
                         .deleteCookies("JSESSIONID")
+                        .addLogoutHandler((request, response, authentication) -> rememberLogin.logout(request, response))
                         .logoutSuccessHandler(logoutSuccessHandler))
                 .formLogin(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable)

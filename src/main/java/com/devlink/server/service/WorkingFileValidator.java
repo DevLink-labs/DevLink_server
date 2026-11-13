@@ -1,6 +1,8 @@
 package com.devlink.server.service;
 
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+import java.util.regex.Matcher;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -15,17 +17,40 @@ public class WorkingFileValidator {
 
 	private static final int MAX_FILES = 2000;
 	private static final Pattern REPO_KEY_PATTERN = Pattern.compile("[0-9a-f]{64}");
+	private static final Pattern IF_MATCH_PATTERN = Pattern.compile(
+	        "\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+	        + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\"");
 	private static final Pattern BRANCH_PATTERN = Pattern.compile("[\\p{L}\\p{N}._/-]+");
 	private final Validator validator;
+	
+	public UUID parseIfMatch(String ifMatch) {
+		if(ifMatch == null) {
+			return null;
+		}
+		Matcher matcher = IF_MATCH_PATTERN.matcher(ifMatch);
+		
+		if(!matcher.matches()) {
+			throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+		}
+		
+		return UUID.fromString(matcher.group(1));
+	}
 	
 	public WorkingFileValidator(Validator validator) {
 		this.validator = validator;
 	}
 	
-	public void validate(String repoKey, WorkingFileRequest request) {
+	public void validateRepoKey(String repoKey) {
 		if(repoKey == null
-				|| !REPO_KEY_PATTERN.matcher(repoKey).matches()
-				|| request == null) {
+				|| !REPO_KEY_PATTERN.matcher(repoKey).matches()) {
+			throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+		}
+	}
+	
+	public void validate(String repoKey, WorkingFileRequest request) {
+		validateRepoKey(repoKey);
+		
+		if(request == null) {
 			throw new BusinessException(ErrorCode.VALIDATION_FAILED);
 		}
 		

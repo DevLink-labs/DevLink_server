@@ -9,6 +9,7 @@ public enum ErrorCode {
     UNSUPPORTED_MEDIA_TYPE(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "지원하지 않는 요청 형식입니다."),
     AUTHENTICATION_REQUIRED(HttpStatus.UNAUTHORIZED, "인증이 필요합니다."),
     INVALID_CREDENTIALS(HttpStatus.UNAUTHORIZED, "이메일 또는 비밀번호가 올바르지 않습니다."),
+    LOGIN_RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "로그인 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."),
     ACCESS_DENIED(HttpStatus.FORBIDDEN, "접근 권한이 없습니다."),
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "리소스를 찾을 수 없습니다."),
     DUPLICATE_REQUEST(HttpStatus.CONFLICT, "중복 요청입니다."),
@@ -32,6 +33,10 @@ public enum ErrorCode {
     PAYLOAD_TOO_LARGE(
             HttpStatus.PAYLOAD_TOO_LARGE,
             "요청 본문 또는 커밋 개수 제한을 초과했습니다."),
+    WORKING_FILES_REVISION_MISMATCH(HttpStatus.PRECONDITION_FAILED,
+    		 "작업 파일 revision이 변경되었습니다. 최신 revision과 Git 상태를 다시 조회해주세요."),
+    WORKING_FILES_PRECONDITION_REQUIRED(HttpStatus.PRECONDITION_REQUIRED,
+    		"작업 파일 저장에는 If-Match 헤더가 필요합니다."),
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 오류가 발생했습니다.");

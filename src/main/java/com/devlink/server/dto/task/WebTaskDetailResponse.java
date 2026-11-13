@@ -11,6 +11,8 @@ public record WebTaskDetailResponse(
 		TaskAgentResponse requesterAgent,
 		TaskAgentResponse receiverAgent,
 		TaskStatus status,
+		Long version,
+		boolean canAccept,
 		LocalDateTime createdAt,
 		LocalDateTime startedAt,
 		LocalDateTime completedAt,

@@ -17,12 +17,32 @@
 
 | 구현 | 선택 조건 | 동작 |
 | --- | --- | --- |
-| `OpenAiCompatibleTeamContextInferenceClient` | `inference.base-url`·`model`이 있고, `require-api-key=true`면 `api-key`도 있을 때 | OpenAI 호환 `POST {base-url}/chat/completions`. `response_format: json_schema(strict)`로 출력 스키마를 강제하고 `max_tokens`만 보낸다. 기본값은 Upstage `https://api.upstage.ai/v1` + `solar-pro4`이며 키는 `UPSTAGE_API_KEY` |
-| `StructuralTeamContextInferenceClient` | 위 조건이 아닐 때(키 없음, 테스트) | LLM 없이 미답변 질문·실패·거절만 `issues`로 올리고 답변이 달리면 닫는다. `common`·`changed`는 이전 값을 유지한다. `model` 컬럼은 `structural` |
+| `OpenAiCompatibleTeamContextInferenceClient` | `inference.base-url`·`model`이 있고, `require-api-key=true`면 `api-key`도 있을 때. OpenRouter 주소는 항상 키가 필요하고, 키가 주소와 짝이 맞지 않으면 제외한다 | OpenAI 호환 `POST {base-url}/chat/completions`. `response_format: json_schema(strict)`로 출력 스키마를 강제하고 `max_tokens`만 보낸다. 기본값은 OpenRouter `https://openrouter.ai/api/v1` + `openai/gpt-6-luna`이며 키는 `OPENROUTER_API_KEY` |
+| `StructuralTeamContextInferenceClient` | 위 조건이 아닐 때(키 없음, 테스트). 키가 주소와 짝이 맞지 않을 때도 여기로 온다(OpenRouter 주소에 `sk-or-`가 아닌 키, 다른 주소에 `sk-or-` 키) | LLM 없이 미답변 질문·실패·거절만 `issues`로 올리고 답변이 달리면 닫는다. `common`·`changed`는 이전 값을 유지한다. `model` 컬럼은 `structural` |
 
-같은 클라이언트로 OpenRouter(`openrouter-provider-guard: true`로 스키마 미지원·학습 수집 제공자 제외)나 자체 vLLM(`require-api-key: false`)으로 옮길 수 있다. 바뀌는 건 설정값뿐이다.
+기본 대상인 OpenRouter에는 `provider: {require_parameters: true, data_collection: "deny"}`를 함께 보내 스키마 미지원·학습 수집 제공자를 제외한다. `openrouter-provider-guard`가 `auto`(기본)면 `base-url`의 호스트가 `openrouter.ai`일 때만 이 필드를 넣고, `true`면 항상, `false`면 넣지 않는다. 그래서 같은 클라이언트를 `base-url`·`model`만 바꿔 자체 호스팅 서버(vLLM 등, `require-api-key: false`)로 옮길 수 있다. OpenRouter 앞에 프록시를 두면 `true`로 지정한다.
 
-프롬프트는 `TeamContextPrompt.SYSTEM`에 있고 `devlink.team-context.prompt-version`을 행마다 저장한다. 프롬프트를 바꾸면 버전도 올려 전후 비교가 가능하게 한다. Upstage Solar는 `reasoning_effort`를 보내지 않으면 추론 없이 답하므로 `max_tokens`가 본문에 그대로 쓰인다.
+프롬프트는 `TeamContextPrompt.SYSTEM`에 있고 `devlink.team-context.prompt-version`을 행마다 저장한다. 프롬프트를 바꾸면 버전도 올려 전후 비교가 가능하게 한다. 요청에 reasoning 설정은 넣지 않는다. 기본 모델(`openai/gpt-6-luna`)은 기본으로 추론 토큰을 조금 쓰고 그만큼 `max_tokens`에서 빠진다(15개 항목 요약에서 약 170토큰).
+
+`max-output-tokens`(기본 6000)는 가득 찬 요약을 담을 만큼 둔다. 요약은 배열당 `max-items`개, 세 배열 합쳐 60개까지 커지고, 실제 호출에서 잰 출력 토큰 수로 어림하면 60개에 약 2,800토큰과 추론 토큰이 든다. 출력이 한도에서 잘려(`finish_reason=length`) 내용이 없거나 JSON이 끊기면 클라이언트가 원인을 적은 예외를 던진다. 이 이벤트는 다른 추론 실패처럼 `devlink.outbox.max-attempts`회까지 다시 시도한 뒤 영구 실패로 남아 요약에 반영되지 않는다. 재시도마다 호출 비용이 들고, 같은 쌍의 다음 이벤트도 같은 큰 요약을 들고 가므로 같은 이유로 실패하기 쉽다. 로그에 `cut off at max_tokens`가 보이면 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`로 한도를 올린다. 자체 호스팅이면 먼저 문맥 길이를 확인한다(아래 "자체 호스팅 (vLLM)"의 "문맥 길이와 출력 한도").
+
+## 기본 모델 선택 (2026-11-12)
+
+기본 모델은 OpenRouter의 `openai/gpt-6-luna`다. 아래 비교를 본 뒤 프로젝트 담당자가 정했다. 비교한 모델 가운데 단가가 가장 낮다.
+
+`TeamContextInferenceLiveTest`의 여섯 이벤트 열(합의로 끝나는 작업 하나, 의견이 갈린 채 남는 작업 하나)을 OpenRouter 경유로 모델마다 여러 번 돌려 마지막 요약을 비교했다. 제공자 필터와 strict JSON 스키마는 네 모델 모두 받았고, 근거 좌표를 지어낸 경우는 없었다.
+
+| 모델 | 100만 토큰당 가격(입력/출력, 달러) | 합의 사항 유지 | 미해결 쟁점 포착 | 실행별 호출 지연 중앙값의 범위 |
+| --- | --- | --- | --- | --- |
+| `upstage/solar-pro4` | 0.15 / 0.60 | 4/4 | 4/4 | 1.4~3.4초 |
+| `openai/gpt-4o-mini` | 0.15 / 0.60 | 4/4 | 4/4 | 3.8~5.7초 |
+| `openai/gpt-6.1-terra` | 1.00 / 5.00 | 3/3 | 3/3 | 5.6~6.1초 |
+| `openai/gpt-6-luna` | 0.10 / 0.50 | 8/9 | 3/9 | 4.3~6.5초 |
+
+- 기본 모델의 알려진 약점: `openai/gpt-6-luna`는 9회 중 6회에서 의견이 갈린 작업을 요약 어디에도 남기지 않았고, 그중 1회는 요약 전체가 비었다. 9회 가운데 2회는 기본 모델로 정한 뒤 최종 코드로 돌린 것이다(합의 유지 2/2, 쟁점 포착 1/2). 추론 강도를 `minimal`로 낮춘 별도 호출에서는 이전 요약 항목도 빠뜨렸다(1회 관찰). 운영에서 `issues`가 비는 일이 잦으면 `TEAM_CONTEXT_INFERENCE_MODEL`을 `upstage/solar-pro4`나 `openai/gpt-4o-mini`로 지정해 같은 테스트로 비교한다.
+- 비용: `openai/gpt-6-luna`는 단가가 가장 낮지만 기본 추론 토큰이 붙어 요약 1회 비용은 `openai/gpt-4o-mini`와 비슷했다(15개 항목 요약에서 둘 다 약 0.0006달러).
+- 한계: 이벤트 열 하나, 프롬프트 v1, 모델당 3~9회다. 실제 대화로 잰 품질이 아니며 순위를 확정하는 근거로는 부족하다. 지연은 한 PC에서 이 서버의 클라이언트로 잰 값이다.
+- 모델을 바꾸려면 `TEAM_CONTEXT_INFERENCE_MODEL`만 지정한다. 바꾸기 전에 같은 테스트를 그 모델로 여러 번 돌려 본다.
 
 ## 데이터
 
@@ -52,19 +72,128 @@ devlink:
     max-items: 20            # 배열당 항목 상한
     prompt-version: v1
     inference:
-      base-url: ${TEAM_CONTEXT_INFERENCE_BASE_URL:https://api.upstage.ai/v1}
-      api-key: ${UPSTAGE_API_KEY:}
+      base-url: ${TEAM_CONTEXT_INFERENCE_BASE_URL:https://openrouter.ai/api/v1}
+      api-key: ${OPENROUTER_API_KEY:}
       require-api-key: true  # vLLM은 false
-      model: ${TEAM_CONTEXT_INFERENCE_MODEL:solar-pro4}
-      timeout-ms: 60000
-      max-output-tokens: 2000
-      openrouter-provider-guard: false
+      model: ${TEAM_CONTEXT_INFERENCE_MODEL:openai/gpt-6-luna}
+      timeout-ms: ${TEAM_CONTEXT_INFERENCE_TIMEOUT_MS:60000}
+      max-output-tokens: 6000
+      openrouter-provider-guard: auto  # auto(주소가 OpenRouter일 때만) / true / false
 ```
 
 운영 Compose는 GitHub Actions Secret `PROD_ENV`에 등록한 추론 설정을 서버 컨테이너에 전달한다.
-Upstage를 쓰면 `UPSTAGE_API_KEY`만 추가한다. OpenRouter를 쓰면 `UPSTAGE_API_KEY`에 OpenRouter 키를 넣고,
-[`deploy/.prod.env.example`](../deploy/.prod.env.example)의 API URL·모델·제공자 필터 설정을 함께 추가한다.
+`OPENROUTER_API_KEY`만 추가하면 기본 대상(OpenRouter의 `openai/gpt-6-luna`)으로 요약한다. 모델만 바꾸려면 `TEAM_CONTEXT_INFERENCE_MODEL`을,
+자체 호스팅 서버를 쓰려면 `TEAM_CONTEXT_INFERENCE_BASE_URL`과 모델을 함께 지정한다([`deploy/.prod.env.example`](../deploy/.prod.env.example)).
+호출 대상은 OpenRouter와 자체 호스팅 서버 두 가지다. Upstage 직접 호출용 설정은 없앴다. 자체 호스팅은 아래 "자체 호스팅 (vLLM)"을 따른다.
 키가 없으면 구조 신호 전용으로 동작하고 요약 행의 `model`이 `structural`로 남는다.
+
+기본 주소는 2026-11-12에 Upstage에서 OpenRouter로 바뀌었고, 같은 변경에서 이전 키 이름(`UPSTAGE_API_KEY`)을 없앴다(S15P31D108-245). 그 전부터 운영하던 배포는 다음을 확인한다.
+
+- `UPSTAGE_API_KEY`는 더 이상 읽지 않고 Compose도 서버에 전달하지 않는다. 이전 템플릿은 OpenRouter 키를 이 이름으로 두게 했으므로, 그 배포는 `PROD_ENV`에서 같은 값을 `OPENROUTER_API_KEY`로 옮긴다. 옮기지 않으면 키가 없는 상태가 되어 구조 신호 전용으로 동작하고 요약 행의 `model`이 `structural`로 남는다. 이때 배포와 CI는 그대로 성공하고, 드러나는 것은 시작 로그의 INFO 한 줄(`OPENROUTER_API_KEY is empty`)뿐이다. 순서: 이 변경을 배포하기 전에 `PROD_ENV`에 `OPENROUTER_API_KEY=<같은 값>`을 먼저 추가하고, 배포 뒤에 `UPSTAGE_API_KEY`를 지운다. 이전 버전의 Compose는 `OPENROUTER_API_KEY`를 서버에 전달하지 않으므로 먼저 추가해도 동작이 바뀌지 않는다.
+- Upstage 키로 Upstage를 직접 부르던 배포는 OpenRouter 키를 발급해 `OPENROUTER_API_KEY`에 넣는다. 같은 모델을 쓰려면 `TEAM_CONTEXT_INFERENCE_MODEL=upstage/solar-pro4`를 지정한다. Upstage 키를 `OPENROUTER_API_KEY`에 넣으면 서버는 OpenRouter 키 형식(`sk-or-`)이 아닌 키를 OpenRouter로 보내지 않고 구조 신호 전용으로 동작하며, 시작할 때 경고 로그를 남긴다.
+- `PROD_ENV`에 주소·모델을 이미 지정한 배포(예: OpenRouter + `openai/gpt-4o-mini`)는 키를 `OPENROUTER_API_KEY`로 옮긴 뒤 그 주소·모델이 그대로 쓰인다. 새 기본 모델을 쓰려면 `TEAM_CONTEXT_INFERENCE_MODEL`을 지우거나 바꾼다.
+- 자체 호스팅 주소로 바꿀 때는 `OPENROUTER_API_KEY`를 지운다. OpenRouter 키가 남아 있으면 서버는 그 키를 다른 주소로 보내지 않고 구조 신호 전용으로 동작한다. 다만 제공자 필터를 `true`로 명시하면 OpenRouter 앞의 프록시로 보고 이 확인을 건너뛴다. 이전 템플릿은 `TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD=true`를 적도록 했으므로, OpenRouter를 떠날 때는 이 줄도 지운다. 남겨 두면 OpenRouter 키와 `provider` 필드가 새 주소로 전송된다.
+- OpenRouter 주소는 `require-api-key`와 무관하게 키가 있어야 켜진다.
+- 주소만 자체 호스팅 서버로 지정하고 모델을 지정하지 않은 배포는 모델이 OpenRouter 기본값(`openai/gpt-6-luna`)이 되어 호출이 실패한다. 시작할 때 경고 로그를 남긴다. 모델을 함께 지정한다.
+- `TEAM_CONTEXT_INFERENCE_OPENROUTER_GUARD`를 지정하지 않으면 `auto`다. 주소가 `openrouter.ai`가 아니면 제공자 필터를 보내지 않으므로, OpenRouter 앞에 프록시나 게이트웨이를 두었다면 `true`로 지정한다.
+
+실제 엔드포인트 확인은 `TEAM_CONTEXT_LIVE=true`와 키를 환경 변수로 두고 `./gradlew test --tests '*TeamContextInferenceLiveTest' -i`로 한다. 여섯 이벤트를 차례로 넣어 스키마와 근거 좌표를 검사하고 요약을 출력한다. 주소·모델·제공자 필터 변수는 서버와 같은 규칙으로 읽는다.
+
+## 자체 호스팅 (vLLM)
+
+외부 API 없이 팀·파트 Context 요약을 돌리는 구성이다(S15P31D108-246). 요약 요청은 [vLLM](https://docs.vllm.ai)의 OpenAI 호환 서버가 받는다.
+담당 Agent 추천의 결정 모델(별도 PR DevLink_server#98, 이 브랜치에는 없다)은 이 구성과 무관하다. 로컬 결정 모델은 붙이지 않기로 했고(담당자 결정, 2026-11-12), 그 기능은 꺼 두거나 OpenRouter API로 켠다. 결정 모델은 자체 변수(`DECISION_MODEL_API_KEY`)에서 키를 읽으므로, 이 구성이 `OPENROUTER_API_KEY`를 비워도 영향받지 않는다.
+
+실행:
+
+```bash
+VLLM_MODEL=<Hugging Face 모델 ID> docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d --build
+```
+
+[`docker-compose.vllm.yml`](../docker-compose.vllm.yml)은 기본 구성 위에 겹쳐 쓰는 파일이다. `vllm` 서비스를 추가하고 `app`의 추론 설정을 그 서비스로 돌린다. 이 파일 없이 실행하는 기본 구성은 바뀌지 않는다.
+
+| 변수 | 기본값 | 뜻 |
+| --- | --- | --- |
+| `VLLM_MODEL` | 없음(필수) | vLLM이 올릴 Hugging Face 모델 ID. 서버가 요청에 넣는 모델 이름도 이 값이다 |
+| `VLLM_MAX_MODEL_LEN` | 32768 | vLLM의 `--max-model-len`. 모델이 지원하는 길이를 넘길 수 없다 |
+| `VLLM_IMAGE_TAG` | latest | `vllm/vllm-openai` 이미지 태그. 운영에서는 확인한 버전으로 고정한다 |
+| `HF_TOKEN` | 없음 | 접근 승인이 필요한 모델을 받을 때만 |
+| `VLLM_START_PERIOD` | 10m | 헬스체크 시작 유예. 모델 내려받기가 오래 걸리면 늘린다 |
+| `VLLM_EXTRA_ARGS` | 없음 | `vllm serve`에 덧붙일 모델별 인자. 예: Qwen3의 생각 출력을 끄는 `--default-chat-template-kwargs '{"enable_thinking":false}'` |
+| `VLLM_ENABLE_CUDA_COMPATIBILITY` | 없음 | 이미지의 CUDA보다 오래된 NVIDIA 드라이버에서 `1`. 지정한 경우에만 컨테이너에 넘긴다. 아래 "조건" 참조 |
+| `TEAM_CONTEXT_INFERENCE_TIMEOUT_MS` | 120000(이 구성), 60000(기본 구성) | 요약 한 번의 제한 시간 |
+
+조건:
+
+- Linux, NVIDIA GPU, NVIDIA Container Toolkit. GPU 메모리는 고른 모델과 `VLLM_MAX_MODEL_LEN`에 따라 달라진다.
+- NVIDIA 드라이버 버전. [vLLM 문서](https://docs.vllm.ai/en/latest/deployment/docker.html)에 따르면 CUDA 13 이미지는 R580 이상 드라이버가 필요하고, R535·R570 드라이버에서는 `VLLM_ENABLE_CUDA_COMPATIBILITY=1`로 호환 모드를 켠다(일부 데이터센터·전문가용 GPU만 지원). 이 값은 Docker로 실행해 보지 못했다. Docker 없이 pip로 설치한 R570 장비에서는 기본 빌드(0.33.0, CUDA 13)가 GPU를 인식하지 못해 CUDA 12.9 빌드(0.32.0)를 썼다.
+- 모델은 채팅 템플릿이 있는 텍스트 생성 모델이어야 하고, 한국어 요약과 JSON 스키마에 맞춘 출력을 할 수 있어야 한다. 기본 모델은 정하지 않았다. 아래 "실제 vLLM에서 확인한 것"의 모델별 결과를 참고하고, 고른 모델은 확인 방법으로 여러 번 돌려 본다.
+- 서버가 보내는 요청은 `POST /v1/chat/completions`이고 `response_format: json_schema`(strict)와 `max_tokens`를 담는다. `Authorization` 헤더와 OpenRouter 전용 `provider` 필드는 보내지 않는다. 요청은 HTTP/1.1로 보낸다. JDK 클라이언트의 기본값대로 h2c 업그레이드 헤더를 붙이면 vLLM이 본문을 읽지 못해 400으로 거절한다([DevLink_server#103](https://github.com/SSAFY-URAYAHA/DevLink_server/issues/103)).
+- vLLM 포트는 호스트에 열지 않는다. 키 없이 받으므로 compose 네트워크 안의 `app`만 접근한다. 다른 장비의 vLLM을 쓰려면 이 파일 대신 `TEAM_CONTEXT_INFERENCE_BASE_URL`·`TEAM_CONTEXT_INFERENCE_MODEL`·`TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false`를 직접 지정하고, 그 구간의 접근 제한은 운영자가 맡는다.
+
+문맥 길이와 출력 한도:
+
+- 입력이 `--max-model-len`을 넘는 요청은 vLLM이 HTTP 400(`maximum context length is 32768 tokens`)으로 거절한다. `max_tokens`만으로 `--max-model-len`을 넘어도 400이다. 거절된 이벤트는 다른 추론 실패처럼 재시도 뒤 요약에서 빠진다.
+- 입력은 맞지만 `max_tokens`와 합쳐 넘는 요청은 거절하지 않는다. vLLM 0.32.0은 남은 길이만큼만 출력하고 `finish_reason: length`로 끝낸다(입력 29,734토큰에 출력 3,034토큰, 합 32,768). 요약이 그 안에 끝나면 정상 처리된다. 잘리면 서버는 `cut off at max_tokens` 오류를 남긴다. 이때 오류 문구는 출력 한도를 올리라고 안내하지만 원인은 문맥 길이다. `max_tokens`는 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`(기본 6000)다.
+- 입력은 시스템 프롬프트, 이전 요약, 새 이벤트 본문, 구조 신호다. 코드가 정한 상한은 다음과 같다. 이벤트 본문은 `max-input-chars`(6000자)까지인데, 완료된 작업의 상태 변경은 내용과 결과를 이어 붙여 약 12,000자까지 간다. 이전 요약은 세 배열 합쳐 60개 항목까지이고 항목의 각 문장도 6000자까지 허용되므로, 실제 크기는 이전 출력(`max_tokens` 이하)이 정한다. 구조 신호의 미답변 질문은 질문당 300자이고 개수 제한이 없다.
+- 토큰 수는 한 건만 쟀다. Qwen3 토크나이저에서 같은 한국어 문장을 반복한 26,400자가 21,634토큰(글자당 약 0.8토큰)이었다. 이 비율이면 12,000자 이벤트가 약 1만 토큰이고, 이전 요약 최대 약 6천 토큰과 출력 6000을 더해도 32768 안에 든다(시스템 프롬프트와 구조 신호는 뺀 계산이다). 토크나이저와 글에 따라 달라지고 다른 모델은 재지 않았으므로, 모델이 허용하면 32768보다 짧게 잡지 않는다. 문맥이 8k·16k인 모델은 기본 `max_tokens`로는 맞지 않는다.
+- 문맥이 더 짧은 모델을 쓰면 `VLLM_MAX_MODEL_LEN`을 그 길이로 낮추고 `TEAM_CONTEXT_INFERENCE_MAX_OUTPUT_TOKENS`도 함께 낮춘다. 출력 한도가 요약보다 작으면 `cut off at max_tokens` 오류가 난다(위 "추론 구현" 참조).
+
+시작 순서와 장애:
+
+- `app`은 `vllm`이 준비될 때까지 기다린다. `vllm`이 헬스체크 시간(시작 유예 `VLLM_START_PERIOD` 기본 10분 + 15초 간격 20회, 기본값으로 약 15분) 안에 준비되지 못하거나 시작 중에 종료되면 `docker compose up`이 실패하고 `app`이 시작되지 않는다. 이때는 요약만이 아니라 작업·질문·답변 API 전체가 내려가 있다. 원인은 모델 내려받기가 오래 걸리는 경우, `VLLM_MAX_MODEL_LEN`이 모델이 지원하는 길이보다 큰 경우, GPU 메모리 부족 등이다. `vllm`에는 재시작 정책을 두지 않았다. 시작 중에 죽은 컨테이너를 계속 다시 띄우면 `up`이 원인 표시 없이 끝없이 기다리기 때문이다. 실행 중에 `vllm`이 죽으면 운영자가 다시 띄운다. `docker compose logs vllm`으로 확인하고, 내려받기가 오래 걸리면 `VLLM_START_PERIOD`를 늘리거나 `vllm`만 먼저 띄워(`up -d vllm`) 모델을 받아 둔다. `vllm`이 준비된 뒤 같은 `up` 명령을 다시 실행한다.
+- 실행 중에 추론이 실패한 이벤트는 `devlink.outbox.max-attempts`회(기본 5회, 재시도 간격 1·2·4·8초) 뒤 영구 실패로 남아 요약에 반영되지 않는다. vLLM이 꺼져 있어 바로 실패하면 약 15초, 응답 없이 멈춰 있으면 시도마다 제한 시간까지 더 기다린 뒤다. vLLM이 그보다 오래 멈춰 있으면 그동안의 이벤트가 요약에서 빠진다. 이미 떠 있는 `app`의 작업·질문·답변은 영향받지 않는다.
+- 요약보다 서버 가동을 우선하려면 `docker-compose.vllm.yml`을 고쳐 `app`의 `depends_on`에서 `vllm`을 뺀다(Compose가 두 파일의 `depends_on`을 합치므로 명령줄로는 뺄 수 없다). 그러면 vLLM이 준비되기 전의 이벤트가 위와 같이 빠진다.
+- 서버 시작 로그의 `Team context inference uses vllm with model …` 줄로 이 구성이 적용됐는지 확인한다. 이 줄이 없으면 구조 신호 전용으로 동작하고 있다.
+
+확인 방법(자체 호스팅 주소가 닿는 곳에서):
+
+```bash
+TEAM_CONTEXT_LIVE=true TEAM_CONTEXT_INFERENCE_BASE_URL=http://<vLLM 주소>:8000/v1 TEAM_CONTEXT_INFERENCE_MODEL=<모델 ID> \
+TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false OPENROUTER_API_KEY= ./gradlew test --tests '*TeamContextInferenceLiveTest' -i
+```
+
+여섯 이벤트를 차례로 넣어 스키마와 근거 좌표를 검사하고, 합의 사항 유지와 미해결 쟁점 포착 여부, 호출 지연을 출력한다. 셸에 OpenRouter 키가 남아 있으면 서버 규칙대로 그 키를 다른 주소로 보내지 않아 테스트가 실패하므로 명령에서 비운다.
+
+실제 vLLM에서 확인한 것(2026-11-12):
+
+환경은 vLLM 0.32.0(CUDA 12.9 빌드, pip 설치), NVIDIA H200 한 장을 다른 작업과 나눠 쓰는 공용 장비, `--max-model-len 32768`이다. 이 장비에는 Docker가 없어 `vllm serve`를 직접 띄웠다.
+
+- `response_format: json_schema`의 `strict: true`를 받고, 출력이 스키마를 따른다.
+- OpenRouter 전용 `provider` 필드를 보내도 무시하고 처리한다. 이 구성에서 서버는 그 필드를 보내지 않는다.
+- `/health`는 vLLM에 API 키를 걸어도 키 없이 200을 준다. 키가 걸려 있으면 `/v1/models`는 키 없는 요청에 401을 준다.
+- 문맥 초과 요청의 동작은 위 "문맥 길이와 출력 한도"에 적은 대로다.
+- 수정 전 클라이언트의 요청은 400으로 거절됐고([DevLink_server#103](https://github.com/SSAFY-URAYAHA/DevLink_server/issues/103)), HTTP/1.1로 고정한 뒤 통과했다.
+- 확인 테스트의 시작 로그는 `Team context inference uses 127.0.0.1 with model Qwen/Qwen3-14B (timeout 60000 ms)`였다. Compose 구성에서는 호스트가 `vllm`, 제한 시간이 120000으로 나온다(실행해 보지 않았다).
+- 키 없는 구성(vLLM에 API 키를 걸지 않고 `TEAM_CONTEXT_INFERENCE_REQUIRE_API_KEY=false`, `OPENROUTER_API_KEY` 비움)으로 여섯 이벤트 테스트를 한 번 돌려 통과했다(Qwen3-14B, 요청 6회, 4xx 응답 없음). 아래 모델별 측정은 공용 장비라 vLLM에 API 키를 걸고, 그 키를 `OPENROUTER_API_KEY`에 넣어 돌렸다.
+
+모델별 결과는 위 "확인 방법"의 여섯 이벤트 테스트를 모델마다 8번 돌린 것이다. 지연은 테스트 한 번 안의 호출 지연 중앙값의 범위이고, GPU를 다른 작업과 나눠 쓰는 상태에서 쟀다. 테스트는 근거 좌표 검사에서 실패하면 그 뒤를 출력하지 않으므로, 합의 유지와 쟁점 포착은 통과한 실행만 센 것이다. 횟수가 적어 비율은 참고값이다. OpenRouter 모델의 같은 측정은 위 "기본 모델 선택"에 있다. 가중치 크기는 Hugging Face가 표시하는 파라미터 수에 2바이트(BF16)를 곱한 값이고 KV 캐시는 별도다. 라이선스는 Hugging Face의 라이선스 표기다. "추가 인자"는 `VLLM_EXTRA_ARGS`에 넣을 값이다.
+
+| 모델 | 공개 | 가중치 | 라이선스 | 추가 인자 | 스키마·근거 통과 | 합의 유지 | 미해결 쟁점 포착 | 호출 지연 중앙값 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `Qwen/Qwen3.8-27B` | 2026-08 | 56GB | Apache-2.0 | `--max-num-seqs 64 --default-chat-template-kwargs '{"enable_thinking":false}'` | 8/8 | 8/8 | 8/8 | 2.9~6.8초 |
+| `google/gemma-4-12B-it` | 2026-05 | 24GB | Apache-2.0 | 없음 | 8/8 | 8/8 | 8/8 | 1.9~3.7초 |
+| `kakaocorp/kanana-2-30b-a3b-instruct-2601` | 2026-01 | 61GB | kanana-license | 없음 | 7/8 | 7/7 | 2/7 | 0.5~1.4초 |
+| `K-intelligence/Midm-2.0-Base-Instruct` | 2025-07 | 23GB | MIT | 없음 | 7/8 | 6/7 | 7/7 | 1.6~2.3초 |
+| `kakaocorp/kanana-1.5-8b-instruct-2505` | 2025-05 | 16GB | Apache-2.0 | 없음 | 7/8 | 7/7 | 5/7 | 0.6~1.2초 |
+| `Qwen/Qwen3-14B` | 2025-04 | 30GB | Apache-2.0 | `--default-chat-template-kwargs '{"enable_thinking":false}'` | 8/8 | 8/8 | 8/8 | 3.8~4.7초 |
+
+- 실패 세 번은 모두 입력에 없는 근거 좌표를 만든 경우다(kanana 1.5와 Midm은 `9:4`, kanana-2는 `39:2`). 근거 좌표가 입력에 있는지는 이 테스트만 검사한다. 서버는 검사하지 않으므로 운영에서는 그런 좌표가 요약에 그대로 남는다.
+- 여덟 번 모두 통과하고 합의와 쟁점을 매번 남긴 모델은 Qwen3.8-27B, Gemma 4 12B, Qwen3-14B다. 그중 Gemma 4 12B가 가중치가 가장 작고 지연이 대체로 짧았다.
+- kanana-2 30B(모델 카드 표기로 활성 파라미터 3B)는 kanana 1.5 8B와 함께 지연이 가장 짧은 쪽이었지만, 의견이 갈린 작업을 일곱 번 중 다섯 번 요약에 남기지 않았다. 활성 파라미터가 적어도 가중치 61GB는 모두 올린다.
+- 측정할 때는 GPU를 나눠 쓰느라 `--gpu-memory-utilization`을 낮췄다(nvidia-smi 표시 143,771MiB 장비에서 kanana 1.5는 0.25, Qwen3-14B·Midm·Gemma 4는 0.35, kanana-2·Qwen3.8은 0.55). Compose 구성은 이 값을 지정하지 않아 vLLM 기본값으로 뜬다.
+- Qwen3.8-27B는 0.55에서 `--max-num-seqs` 없이는 뜨지 않았다(`max_num_seqs (1024) exceeds available Mamba cache blocks (436)`). `--max-num-seqs 64`를 주자 떴다. 오류 문구는 `gpu_memory_utilization`을 올리는 방법도 안내하므로, GPU를 혼자 쓰는 구성에서는 이 인자가 필요 없을 수 있다(확인하지 않았다). 요약은 요청을 하나씩 보내므로 작은 값으로 충분하다. 표의 인자를 `VLLM_EXTRA_ARGS`에 넣으면 네 개의 인자로 나뉘는 것은 `docker compose config`로 확인했다.
+- Qwen 두 모델은 생각 출력을 끈 상태로만 쟀다. Gemma 4는 모델 카드가 `enable_thinking=True`를 줄 때 켜진다고 적고 있어 인자를 주지 않았다. 세 모델 모두 생각 출력을 켠 상태의 품질과 지연은 재지 않았다.
+- 표의 위 세 모델(Qwen3.8, Gemma 4, kanana-2)은 같은 날 같은 버전(0.32.0)을 다시 설치한 뒤 쟀다. 아래 세 모델과는 시점과 GPU 부하가 달라 지연을 그대로 비교하기는 어렵다.
+
+확인하지 못한 것(2026-11-12):
+
+- Docker Compose 구성 자체. `docker compose config`로 문법과 인자가 나뉘는 방식만 확인했다. 이미지 안에서 헬스체크 명령이 동작하는지, GPU 예약, `VLLM_ENABLE_CUDA_COMPATIBILITY`는 실행해 보지 못했다.
+- "시작 순서와 장애"에 적은 Compose 동작(`vllm`이 준비되지 못하면 `up`이 실패하고 `app`이 시작되지 않는다)은 Compose의 일반 동작에서 따온 것이고 이 구성으로 실행해 본 것이 아니다.
+- vLLM 0.32.0 외의 버전. 문맥 초과 요청의 처리는 버전에 따라 다를 수 있다.
+- 호출 사이가 긴 운영 조건. vLLM이 닫은 유휴 연결을 클라이언트가 다시 쓰려다 실패하는 경우가 있는지 보지 못했다. 실패한 이벤트는 outbox 재시도가 다시 보낸다.
+- 표의 모델을 실제 팀 대화로 돌린 품질.
+- 각 모델 라이선스의 사용 조건. 표에는 Hugging Face 표기만 옮겼다. kanana-license의 내용은 읽지 않았다.
 
 ## 검증
 
@@ -72,7 +201,10 @@ Upstage를 쓰면 `UPSTAGE_API_KEY`만 추가한다. OpenRouter를 쓰면 `UPSTA
 | --- | --- |
 | 엔티티 추출 | `TeamContextExtractorTest` |
 | 구조 전용 추론 | `StructuralTeamContextInferenceClientTest` |
-| OpenAI 호환 요청·응답·오류 | `OpenAiCompatibleTeamContextInferenceClientTest` (MockRestServiceServer) |
+| OpenAI 호환 요청·응답·오류, 제공자 필터의 적용 범위 | `OpenAiCompatibleTeamContextInferenceClientTest` (MockRestServiceServer) |
+| 설정 기본값과 환경 변수 연결(키 이름, 읽지 않는 이전 키 이름, 주소를 지정한 구성, 키 불일치 경고, vLLM 구성이 넘기는 값) | `TeamContextInferenceWiringTest` |
+| 평문 HTTP 주소로 보내는 요청이 HTTP/1.1이고 업그레이드 헤더가 없음 | `TeamContextInferenceTransportTest` (JDK 내장 HTTP 서버) |
+| 실제 엔드포인트에서의 증분 요약(선택 실행) | `TeamContextInferenceLiveTest` |
 | 요약 정규화·JSON 왕복 | `TeamContextSummaryTest` |
 | Outbox → 갱신 → 조회 전체, 중복 반영 방지, 잘못된 메시지 영구 실패, 인증·검증 오류 | `TeamContextIntegrationTest` (Testcontainers) |
 | 저장 직후 점유, 파트 쌍별 재시도 순서, 35초 뒤 점유 유효성 | `TeamContextOutboxServiceIntegrationTest` (Testcontainers) |

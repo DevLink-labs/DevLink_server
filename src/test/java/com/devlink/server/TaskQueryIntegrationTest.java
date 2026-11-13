@@ -1,6 +1,9 @@
 package com.devlink.server;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.URI;
@@ -18,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import com.devlink.server.common.AgentTokenHash;
 import com.devlink.server.domain.agent.Agent;
@@ -32,6 +36,7 @@ import com.devlink.server.domain.team.Team;
 import com.devlink.server.domain.teammember.MemberRole;
 import com.devlink.server.domain.teammember.TeamMember;
 import com.devlink.server.domain.user.User;
+import com.devlink.server.dto.UserResponse;
 import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.TaskRepository;
 import com.devlink.server.repository.TaskFileRepository;
@@ -39,6 +44,7 @@ import com.devlink.server.repository.TaskEventRepository;
 import com.devlink.server.repository.TeamMemberRepository;
 import com.devlink.server.repository.TeamRepository;
 import com.devlink.server.repository.UserRepository;
+import com.devlink.server.service.LoginAttemptLimiter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,6 +58,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -72,6 +79,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private ObjectMapper json;
+    @MockitoBean private LoginAttemptLimiter loginAttempts;
 
     private User owner;
     private User teammate;
@@ -418,7 +426,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             List<String> fields = new ArrayList<>();
             data.fieldNames().forEachRemaining(fields::add);
             assertThat(fields).containsExactlyInAnyOrder("taskId", "teamId", "teamName", "taskSummary",
-                    "requesterAgent", "receiverAgent", "status", "createdAt", "startedAt",
+                    "requesterAgent", "receiverAgent", "status", "version", "canAccept", "createdAt", "startedAt",
                     "completedAt", "lastActivityAt");
             assertThat(data.path("taskId").asLong()).isEqualTo(taskId);
             assertThat(data.path("teamId").asLong()).isEqualTo(team.getId());
@@ -427,6 +435,9 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             assertDetailAgent(data.path("requesterAgent"), callerAgent);
             assertDetailAgent(data.path("receiverAgent"), teammateAgent);
             assertThat(data.path("status").asText()).isEqualTo(status);
+            assertThat(data.path("version").isIntegralNumber()).isTrue();
+            assertThat(data.path("version").asLong()).isEqualTo(tasks.findById(taskId).orElseThrow().getVersion());
+            assertThat(data.path("canAccept")).isEqualTo(json.getNodeFactory().booleanNode("PENDING".equals(status)));
             LocalDateTime createdAt = BASE_TIME.plusMinutes(minute);
             assertTimestamp(data.path("createdAt"), createdAt);
             assertTimestamp(data.path("startedAt"), hasStarted ? createdAt.plusSeconds(10) : null);
@@ -450,7 +461,13 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             assertThat(data.path("requesterAgent").path("name").asText()).isEqualTo("변경된 요청 Agent");
             assertThat(data.path("receiverAgent").path("name").asText()).isEqualTo("변경된 수신 Agent");
             JsonNode common = assertSuccess(get(detailPath(taskId), callerAgent.token()));
-            data.fieldNames().forEachRemaining(field -> assertThat(data.get(field)).isEqualTo(common.get(field)));
+            assertThat(data.path("canAccept")).isEqualTo(json.getNodeFactory().booleanNode(false));
+            assertThat(common.has("canAccept")).isFalse();
+            data.fieldNames().forEachRemaining(field -> {
+                if (!"canAccept".equals(field)) {
+                    assertThat(data.get(field)).isEqualTo(common.get(field));
+                }
+            });
             assertThat(common.path("resultText").asText()).isEqualTo("테스트 작업 완료");
             assertThat(common.path("prompt").asText()).isEqualTo("목록 조회 테스트: sentCompleted");
             assertCurrentUser(client, owner.getId());
@@ -619,6 +636,7 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
             Long taskId = taskIds.get("otherMembersSent");
             JsonNode detail = assertSuccess(webDetailGet(client, team.getId(), taskId));
             assertThat(detail.path("taskId").asLong()).isEqualTo(taskId);
+            assertThat(detail.path("canAccept")).isEqualTo(json.getNodeFactory().booleanNode(false));
             JsonNode history = assertSuccess(webHistoryGet(client, team.getId(), taskId, ""));
             assertWebHistoryPage(history, taskId, null, false);
             assertThat(history.path("prompt").asText()).isEqualTo("목록 조회 테스트: otherMembersSent");
@@ -1876,6 +1894,8 @@ class TaskQueryIntegrationTest extends AbstractIntegrationTest {
 
     @BeforeEach
     void prepareTestData() {
+        when(loginAttempts.<UserResponse>verify(anyString(), anyString(), any()))
+                .thenAnswer(invocation -> invocation.<Supplier<UserResponse>>getArgument(2).get());
         taskIds = new LinkedHashMap<>();
         taskSequence = 0;
 
