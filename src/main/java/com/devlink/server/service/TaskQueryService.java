@@ -202,6 +202,9 @@ public class TaskQueryService {
 						receiverAgent.getId(),
 						receiverAgent.getName()),
 				task.getStatus(),
+				task.getVersion(),
+				task.getStatus() == TaskStatus.PENDING && receiverAgent.getTeamId().equals(teamId)
+						&& receiverAgent.getOwnerUserId().equals(user.userId()),
 				task.getCreatedAt(),
 				task.getStartedAt(),
 				task.getCompletedAt(),

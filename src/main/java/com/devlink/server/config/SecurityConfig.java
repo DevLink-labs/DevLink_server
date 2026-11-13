@@ -143,6 +143,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/signup", "/api/v1/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf",
                                 "/api/v1/health", "/actuator/health").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/web/teams/{teamId}/tasks/{taskId}/accept")
+                                .hasRole("USER")
                         .requestMatchers("/api/v1/auth/users/me", "/api/v1/auth/users/me/git-identity",
                                 "/api/v1/web/events").hasRole("USER")
                         .requestMatchers("/api/v1/teams", "/api/v1/teams/**", "/api/v1/agents/**")
