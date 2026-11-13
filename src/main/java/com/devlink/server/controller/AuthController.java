@@ -9,6 +9,7 @@ import com.devlink.server.dto.LoginRequest;
 import com.devlink.server.dto.SignupRequest;
 import com.devlink.server.dto.UserResponse;
 import com.devlink.server.service.AuthService;
+import com.devlink.server.service.LoginAttemptLimiter;
 import com.devlink.server.service.RememberLoginService;
 import com.devlink.server.service.UserSessionAuthentication;
 import jakarta.servlet.http.HttpServletRequest;
@@ -31,6 +32,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AuthController {
     private final AuthService authService;
+    private final LoginAttemptLimiter loginAttempts;
     private final UserSessionAuthentication sessions;
     private final RememberLoginService rememberLogin;
 
@@ -49,7 +51,8 @@ public class AuthController {
     @PostMapping("/login")
     public ApiResponse<UserResponse> login(@Valid @RequestBody LoginRequest loginRequest,
             HttpServletRequest request, HttpServletResponse response) {
-        UserResponse user = authService.login(loginRequest);
+        UserResponse user = loginAttempts.verify(request.getRemoteAddr(), loginRequest.email(),
+                () -> authService.login(loginRequest));
         var rememberCookie = rememberLogin.onPasswordLogin(user.userId(), loginRequest.rememberMe(), request);
         sessions.authenticate(user.userId(), request, response);
         rememberCookie.ifPresent(cookie -> response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString()));
