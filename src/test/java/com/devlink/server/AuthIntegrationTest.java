@@ -19,6 +19,7 @@ import com.devlink.server.domain.agent.ToolType;
 import com.devlink.server.domain.team.Team;
 import com.devlink.server.domain.teammember.MemberRole;
 import com.devlink.server.domain.teammember.TeamMember;
+import com.devlink.server.domain.user.User;
 import com.devlink.server.repository.AgentRepository;
 import com.devlink.server.repository.TaskRepository;
 import com.devlink.server.repository.TeamMemberRepository;
@@ -114,6 +115,27 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
             if (email != null) {
                 assertThat(users.findByEmail(email.toLowerCase(Locale.ROOT))).isEmpty();
             }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Abcd1234", "Abcd/:[~", "ABCDE12@", "abcde12{", "Ab1!2345678901234567890123456789"})
+    void signupAcceptsThreeCharacterTypesAndPasswordsAtLengthLimits(String password) throws Exception {
+        try (var browser = new Browser()) {
+            var response = browser.post("/api/v1/auth/signup",
+                    signupBody(newEmail(), password, "Alice", null), browser.csrf());
+            assertSuccess(response, 201);
+        }
+    }
+
+    @Test
+    void loginAcceptsExistingPasswordBelowSignupMinimum() throws Exception {
+        String email = newEmail();
+        User user = users.saveAndFlush(User.create(email, "Existing user", null, passwords.encode("a")));
+        try (var browser = new Browser()) {
+            var response = browser.post("/api/v1/auth/login", loginBody(email, "a"), browser.csrf());
+            assertSuccess(response, 200);
+            assertThat(response.body().path("data").path("userId").asLong()).isEqualTo(user.getId());
         }
     }
 
@@ -472,6 +494,11 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
                 signupBody(newEmail(), null, "Alice", null),
                 signupBody(newEmail(), "A".repeat(73), "Alice", null),
                 signupBody(newEmail(), "가".repeat(25), "Alice", null),
+                signupBody(newEmail(), "Ab1!xyz", "Alice", null),
+                signupBody(newEmail(), "Ab1" + "x".repeat(30), "Alice", null),
+                signupBody(newEmail(), "AbCdEfGh", "Alice", null),
+                signupBody(newEmail(), "Ab1! xyZ", "Alice", null),
+                signupBody(newEmail(), "Ab1!한글xy", "Alice", null),
                 signupBody(newEmail(), PASSWORD, " ", null));
     }
 
