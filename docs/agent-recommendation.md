@@ -54,7 +54,7 @@ OFFLINE 후보를 선택한 후의 작업 요청은 생성과 전달 결과를 �
 역할 태그는 토큰 연속열이 질문에 그대로 나타날 때만 일치하므로 "로그인" 태그는 "login 오류" 질문을 놓친다. 이 판정에 한해 결정 모델을 보강으로 쓸 수 있다. 기본 대상은 OpenRouter Decisions API(`POST https://openrouter.ai/api/alpha/decisions`)의 `google/gemini-decision-1`이다. 텍스트를 생성하지 않고 질문별 확률만 돌려주는 모델이다.
 
 - 최종 일치 태그는 토큰 일치와 모델 일치의 합집합이다. 모델은 일치를 추가만 하며 토큰으로 일치한 태그를 빼지 않는다.
-- 모델로 더하는 태그는 Agent당 선언 순서상 첫 하나(20점)뿐이다. 무엇에나 맞도록 쓴 태그 여러 개로 역할 60점을 채워 Git 근거(최대 40점)를 앞지르지 못하게 하기 위한 제한이다. 그래도 넓은 태그 하나는 20점을 얻을 수 있으므로 임계값은 평가 세트로 정한다.
+- 모델로 더하는 태그는 Agent당 선언 순서상 첫 하나(20점)뿐이다. 무엇에나 맞도록 쓴 태그 여러 개로 역할 60점을 채워 Git 근거(최대 40점)를 앞지르지 못하게 하기 위한 제한이다. 그래도 넓은 태그 하나는 20점을 얻을 수 있다. 기본 임계값 0.7은 평가 세트로 확인했고, 그 세트에 맞춰 조정하지는 않았다.
 - 명시 태그(`roles`)만 모델에 묻는다. `roles`가 비어 역할 설명을 나눈 fallback 태그는 자유 문장이라 보내지 않고 모델 일치도 받지 않는다.
 - 점수식(20 × min(일치 태그 수, 3)), Git 점수, 후보 선택, 응답 형식과 오류 코드는 그대로다. 응답에는 모델로 일치했는지 표시하지 않는다.
 - 요청당 호출은 한 번이다. 질문을 `state`로, 후보들의 태그 중 토큰으로 일치하지 않은 것을 중복 없이 태그당 `noul`(예/아니오) 질문 하나로 보낸다. 한 요청에 최대 200개까지 묻고 넘는 태그는 토큰 판정만 쓴다. 요청 Agent 자신의 태그는 보내지 않는다.
@@ -87,7 +87,9 @@ OFFLINE 후보를 선택한 후의 작업 요청은 생성과 전달 결과를 �
 - 켜 두었는데 설정이 갖춰지지 않으면(주소·모델 없음, 필요한 키 없음) 호출하지 않으며 시작할 때 경고 로그를 한 줄 남긴다.
 - Google의 Decisions API를 직접 부르는 형식(`x-goog-api-key`, 본문 `input`)은 지원하지 않는다.
 
-검증은 DecisionsApiRoleDecisionClientTest의 요청 형식(주소, Bearer 인증, `state`)·임계값·실패 유형별 빈 결과·키 없는 자체 호스팅 호출, DecisionsApiRoleDecisionClientHttpTest의 실제 HTTP 요청(평문 주소에 업그레이드 헤더 없음 포함)과 응답 헤더·본문 지연 시 시간 제한, AgentRecommendationRoleDecisionTest의 점수 보강·Agent당 한 태그 제한·실패 시 동일 응답·비멤버 차단·트랜잭션 밖 호출, RoleDecisionWiringTest의 환경 변수 연결·자체 호스팅 구성·켰지만 설정이 모자랄 때의 경고 로그로 수행한다. 평가 세트는 `src/test/resources/recommendation/role-decision-eval.txt`에 있고, 실제 모델의 정확도와 지연은 `DECISION_MODEL_EVAL=true`와 키(키 없는 자체 호스팅 서버는 `DECISION_MODEL_REQUIRE_API_KEY=false`)를 환경 변수로 두고 `./gradlew test --tests '*RoleDecisionEvaluationTest' -i`로 잰다. 모델의 지연, 한국어 정확도, 가격, 호출 한도, 데이터 보관 조건은 이 측정 전까지 확인되지 않은 상태다.
+검증은 DecisionsApiRoleDecisionClientTest의 요청 형식(주소, Bearer 인증, `state`)·임계값·실패 유형별 빈 결과·키 없는 자체 호스팅 호출, DecisionsApiRoleDecisionClientHttpTest의 실제 HTTP 요청(평문 주소에 업그레이드 헤더 없음 포함)과 응답 헤더·본문 지연 시 시간 제한, AgentRecommendationRoleDecisionTest의 점수 보강·Agent당 한 태그 제한·실패 시 동일 응답·비멤버 차단·트랜잭션 밖 호출, RoleDecisionWiringTest의 환경 변수 연결·자체 호스팅 구성·켰지만 설정이 모자랄 때의 경고 로그로 수행한다. 평가 세트는 `src/test/resources/recommendation/role-decision-eval.txt`(태그 판정 253건)와 `role-decision-team.txt`(추천 비교용 팀과 질문 45건)에 있고, 실제 모델 측정은 `DECISION_MODEL_EVAL=true`와 키(키 없는 자체 호스팅 서버는 `DECISION_MODEL_REQUIRE_API_KEY=false`)를 환경 변수로 두고 `./gradlew test --tests '*RoleDecisionEvaluationTest' --tests '*RoleDecisionRecommendationBenchmarkTest' -i`로 잰다.
+
+켜기 전과 후의 비교는 [역할 결정 모델 도입 전후 벤치마크](role-decision-benchmark.md)에 있다(2026-11-16). 만든 사례 기준으로 태그 판정 정답이 108/253에서 243/253으로 늘었고 틀린 일치는 7건에서 8건이 됐다. 추천으로는 담당을 찾지 못하던 질문이 모두 담당을 찾았고, 담당 외의 Agent가 함께 추천되는 경우와 담당이 없는 질문에 추천이 나오는 경우가 생겼다. 모델 호출은 추천 한 번에 중앙값 0.6~0.7초를 더했다. 실제 팀 데이터로의 정확도, 호출 한도, 데이터 보관 조건은 확인하지 않았다.
 
 ## 한계
 
